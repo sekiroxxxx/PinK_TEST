@@ -1,0 +1,17 @@
+{
+  "assets/.gitkeep": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+  "assets/animations/target-pulse.anim": "b220b4470905c81d79db704681bffce645482c75c305f669499a6b388fcfcf04",
+  "assets/animations/target-pulse.anim.meta": "61f77132fe0e84d31f6c5eda05f5a96c1987496a8255ebd3af5cc8b8cb1a265f",
+  "assets/animations.meta": "f232d8d06e6a31b3dfdee337471f5304c865125852caef66ed9f58efe506d1be",
+  "assets/main.scene": "47e406c8365891dc1e81eaf6eddddbd56a312e700e8f3bb555434e04d1a7a25c",
+  "assets/main.scene.meta": "39635b3035a7547c6204162b92449234cd6219c3ff6ea7a02251e94db08435f8",
+  "assets/resources/images/pink-target.png": "c67934fcd468b8c8e24673c302268407563b446231449301a80e932268e274e0",
+  "assets/resources/images/pink-target.png.meta": "8d1b0982428243bb2cae74f9460e84056ecbc3361bd2d42a130cac66dda57729",
+  "assets/resources/images/rounded-panel.png": "f3c3978ab16f598e1bef7e986665fc57f028be664d345f0e3f02f2926f896136",
+  "assets/resources/images/rounded-panel.png.meta": "4a4b61feeb2d469b83638f3ee8417e87012263d1f872de8633ed2985f816e781",
+  "assets/resources/images.meta": "f4cf532dd225d5cfc6504da4c96cf3aa3dea13e62b7af9e4fa1399210f4714b0",
+  "assets/resources.meta": "c016f49c2cc407270c4d0f7451f0b5061ce16368c7d0d05bf969257edc77b8dc",
+  "assets/scripts/ClickGame.ts": "f9d34ba7f3898855ef99ebcea34f039e8b225cda58f8e528e49ea3636da7244f",
+  "assets/scripts/ClickGame.ts.meta": "ae78f00ed4bc55c87e127e55515a4abb98dd4810e2e6a31c2643388f3e9ad1a9",
+  "assets/scripts.meta": "3dec2b962b70aa44d8ed10a8fdd60e64b5aecc1c6237d1f6a996c5fcfa44554e"
+}

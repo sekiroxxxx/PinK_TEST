@@ -1,0 +1,73 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 1,
+  "targets": [
+    {
+      "id": "pink-builder-basic-platform",
+      "label": "PinK Builder Basic Platform",
+      "configurationTitle": "PinK Builder Basic Platform",
+      "category": "X-Application",
+      "fields": {
+        "packages.pink-builder-basic-platform.apiEnvironment": {
+          "kind": "string",
+          "control": "enum"
+        },
+        "packages.pink-builder-basic-platform.enableDiagnostics": {
+          "kind": "boolean",
+          "control": "boolean"
+        }
+      }
+    }
+  ],
+  "cases": [
+    {
+      "caseId": "example.basic.initial",
+      "platform": "pink-builder-basic-platform",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": [
+            "packages.pink-builder-basic-platform.apiEnvironment",
+            "packages.pink-builder-basic-platform.enableDiagnostics"
+          ]
+        },
+        {
+          "id": "api",
+          "op": "set",
+          "field": "packages.pink-builder-basic-platform.apiEnvironment",
+          "value": "staging"
+        },
+        {
+          "id": "diagnostics",
+          "op": "set",
+          "field": "packages.pink-builder-basic-platform.enableDiagnostics",
+          "value": true
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": [
+            "packages.pink-builder-basic-platform.apiEnvironment",
+            "packages.pink-builder-basic-platform.enableDiagnostics"
+          ]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "packages.pink-builder-basic-platform.apiEnvironment": "staging",
+            "packages.pink-builder-basic-platform.enableDiagnostics": true
+          }
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ]
+    }
+  ]
+}

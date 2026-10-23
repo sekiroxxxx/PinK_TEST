@@ -1,0 +1,69 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "caseId": "steps.web-mobile.edited",
+      "platform": "web-mobile",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": [
+            "name",
+            "packages.web-mobile.orientation",
+            "packages.web-mobile.embedWebDebugger"
+          ]
+        },
+        {
+          "id": "debugger",
+          "op": "set",
+          "field": "packages.web-mobile.embedWebDebugger",
+          "value": true
+        },
+        {
+          "id": "orientation",
+          "op": "set",
+          "field": "packages.web-mobile.orientation",
+          "value": "portrait"
+        },
+        { "id": "rename", "op": "set", "field": "name", "value": "qa_mobile_steps_edited" },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": [
+            "name",
+            "packages.web-mobile.orientation",
+            "packages.web-mobile.embedWebDebugger"
+          ]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "qa_mobile_steps_edited",
+            "packages.web-mobile.orientation": "portrait",
+            "packages.web-mobile.embedWebDebugger": true
+          }
+        },
+        {
+          "id": "prompt",
+          "op": "assert",
+          "check": "prompt",
+          "field": "name",
+          "expected": { "kind": "none" }
+        },
+        {
+          "id": "editable",
+          "op": "assert",
+          "check": "state",
+          "field": "packages.web-mobile.orientation",
+          "expected": { "visible": true, "disabled": false }
+        },
+        { "id": "restore", "op": "restore", "record": "original" }
+      ]
+    }
+  ]
+}

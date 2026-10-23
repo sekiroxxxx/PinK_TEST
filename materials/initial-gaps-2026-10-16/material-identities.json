@@ -1,0 +1,51 @@
+{
+  "prepared": "2026-10-16",
+  "state": "prepared-not-run",
+  "projectUuid": "80741f63-8857-4963-a983-80ed2363e6ba",
+  "pinkProjectUuid": "56df70a5-e6b9-462f-8918-f30201a1a488",
+  "scenes": {
+    "gap-a": {
+      "uuid": "1677e960-a08a-4abc-92ab-ea027bf63847",
+      "statusNodeId": "fc159KOIj1Der9GGWGaqwXg"
+    },
+    "gap-b": {
+      "uuid": "2c5c151b-5fc6-418f-b8c7-04b2d7b1be69",
+      "statusNodeId": "28272vdtvdI16njvejTRaQK"
+    },
+    "l10n-control": {
+      "uuid": "9c379ec5-6dfa-46c8-8314-30e59e3306d7",
+      "completeNodeId": "ee774tHr/hN3LfnFO+2yEp8",
+      "missingNodeId": "1bd0dnPUBBMQZDCOKVXeSLL"
+    }
+  },
+  "scriptUuids": {
+    "BuildInput": "d0c1bb4b-69e3-4014-abc2-3f92a6153f19",
+    "GapMaterialBridge": "e17a7ca3-7fe9-4e6b-a8a9-1992ca5221ae",
+    "GapLocaleControls": "fff72beb-1439-4f8d-812e-2723f4e9679b",
+    "packagedL10nLabel": "30d83ab3-45f6-472d-8305-9f8280f4f1b8"
+  },
+  "textKeys": {
+    "complete": "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+    "missingInEn": "48c19f3a-60a9-4aab-8a41-31fa053b1f02"
+  },
+  "sources": {
+    "gameAssets": "D:\\PinK-test\\pink-game-demo-main\\pink-game-demo-main",
+    "catalogShapeReference": "D:/PinK-test/l10n_007/localization-editor/translate-data",
+    "runtimeContractReference": "C:/Users/Administrator/Desktop/PinK-Clone/pink-extensions/pink-localization-editor/static/assets",
+    "windowsPackagedRuntimeReference": "C:/Users/Administrator/Downloads/PinK-win32-x64-2610121218-0.0.1.39/resources/app/extensions/SUD.pink-localization-editor/static/assets"
+  },
+  "adaptations": [
+    {
+      "files": [
+        "shared-project/assets/main.scene",
+        "shared-project/assets/gap-a.scene",
+        "shared-project/assets/gap-b.scene",
+        "shared-project/assets/l10n-control.scene"
+      ],
+      "nodePath": "Canvas/Background",
+      "oldMissingSpriteFrame": "7d8f9b89-4fd1-4c9f-a3ab-38ec7cded7ca@f9941",
+      "reusedExistingSpriteFrame": "eb02a77c-5734-44bf-bf5d-8a75a18f4a51@f9941",
+      "reason": "Source scene background references an asset absent from source assets. Only the material copy is adapted."
+    }
+  ]
+}

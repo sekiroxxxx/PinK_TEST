@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "pink": "<待测安装目录或PinK.exe完整路径>",
+  "project": "<测试工程完整路径>",
+  "casesFile": "../../../tools/case-catalog/public-combinations.json",
+  "materials": "./materials.json",
+  "groups": "publish",
+  "caseIds": [
+    "review.publish.web-desktop",
+    "review.publish.android",
+    "review.publish.huawei-agc",
+    "review.publish.google-play",
+    "review.publish.taobao-mini-game"
+  ],
+  "port": 9222
+}

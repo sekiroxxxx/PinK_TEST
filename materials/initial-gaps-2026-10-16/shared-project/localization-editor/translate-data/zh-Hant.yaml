@@ -1,0 +1,34 @@
+{
+  "locale": "zh-Hant",
+  "items": [
+    [
+      "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+      {
+        "key": "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+        "value": "TW_COMPLETE_排除對照",
+        "type": 2,
+        "isVariant": false,
+        "associations": [],
+        "_variants": []
+      }
+    ],
+    [
+      "48c19f3a-60a9-4aab-8a41-31fa053b1f02",
+      {
+        "key": "48c19f3a-60a9-4aab-8a41-31fa053b1f02",
+        "value": "TW_FALLBACK_排除對照",
+        "type": 2,
+        "isVariant": false,
+        "associations": [],
+        "_variants": []
+      }
+    ]
+  ],
+  "languageConfig": {
+    "bcp47Tag": "zh-Hant",
+    "translateFinished": 2,
+    "translateTotal": 2,
+    "compileFinished": 0,
+    "compileTotal": 0
+  }
+}

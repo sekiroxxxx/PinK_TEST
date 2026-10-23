@@ -1,0 +1,46 @@
+{
+  "locale": "index",
+  "items": [
+    [
+      "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+      {
+        "key": "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+        "value": "",
+        "type": 2,
+        "isVariant": false,
+        "associations": [
+          {
+            "sceneUuid": "9c379ec5-6dfa-46c8-8314-30e59e3306d7",
+            "nodeUuid": "ee774tHr/hN3LfnFO+2yEp8",
+            "reference": "9c379ec5-6dfa-46c8-8314-30e59e3306d7"
+          }
+        ],
+        "_variants": []
+      }
+    ],
+    [
+      "48c19f3a-60a9-4aab-8a41-31fa053b1f02",
+      {
+        "key": "48c19f3a-60a9-4aab-8a41-31fa053b1f02",
+        "value": "",
+        "type": 2,
+        "isVariant": false,
+        "associations": [
+          {
+            "sceneUuid": "9c379ec5-6dfa-46c8-8314-30e59e3306d7",
+            "nodeUuid": "1bd0dnPUBBMQZDCOKVXeSLL",
+            "reference": "9c379ec5-6dfa-46c8-8314-30e59e3306d7"
+          }
+        ],
+        "_variants": []
+      }
+    ]
+  ],
+  "languageConfig": {
+    "bcp47Tag": "index",
+    "translateFinished": 0,
+    "translateTotal": 2,
+    "compileFinished": 0,
+    "compileTotal": 0
+  }
+}

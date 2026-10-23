@@ -1,0 +1,23 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "caseId": "steps.web-desktop.basic",
+      "platform": "web-desktop",
+      "steps": [
+        { "id": "original", "op": "record", "fields": ["name"] },
+        { "id": "rename", "op": "set", "field": "name", "value": "qa_steps_basic" },
+        { "id": "current", "op": "read", "fields": ["name"] },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": { "name": "qa_steps_basic" }
+        },
+        { "id": "restore", "op": "restore", "record": "original" }
+      ]
+    }
+  ]
+}

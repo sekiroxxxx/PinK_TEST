@@ -1,0 +1,2473 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; base-uri 'none'; form-action 'none'"
+    />
+    <title>PinK 构建用例</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --canvas: #202224;
+        --surface: #26282b;
+        --field: #303235;
+        --line: #45494f;
+        --ink: #e2e6eb;
+        --muted: #b0b8c3;
+        --blue: #a2c9f3;
+        --selected: #293440;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--canvas);
+        color: var(--ink);
+        font:
+          14px/1.6 "Segoe UI",
+          "Microsoft YaHei UI",
+          sans-serif;
+      }
+      button,
+      select {
+        font: inherit;
+        color: inherit;
+      }
+      button {
+        cursor: pointer;
+      }
+      a {
+        color: var(--blue);
+        text-underline-offset: 3px;
+        overflow-wrap: anywhere;
+      }
+      button:focus-visible,
+      select:focus-visible,
+      summary:focus-visible,
+      a:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 4px;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      header {
+        min-height: 64px;
+        border-bottom: 1px solid var(--line);
+        padding: 16px 30px;
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+      header strong {
+        font-weight: 600;
+      }
+      header span {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      main {
+        max-width: 1000px;
+        margin: 32px auto 64px;
+        padding: 0 28px;
+      }
+      h1 {
+        font-size: 24px;
+        font-weight: 600;
+        margin: 0 0 20px;
+      }
+      h2 {
+        font-size: 17px;
+        font-weight: 600;
+        margin: 0;
+      }
+      h3 {
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 12px;
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      .category-nav {
+        display: flex;
+        gap: 28px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 28px;
+      }
+      .category-nav button {
+        background: none;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        color: var(--muted);
+        padding: 0 4px 12px;
+        font-size: 15px;
+      }
+      .category-nav button[aria-current] {
+        color: var(--blue);
+        border-bottom-color: var(--blue);
+      }
+      .platform-heading {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+        margin: 0 0 24px;
+      }
+      .platform-heading label {
+        font-size: 12px;
+        color: var(--muted);
+      }
+      select {
+        border: 1px solid #626a75;
+        background: var(--field);
+        border-radius: 4px;
+        padding: 8px 12px;
+        min-width: 220px;
+        max-width: 100%;
+      }
+      .combination-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px;
+        margin: 24px 0 32px;
+      }
+      .combo-card {
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 6px;
+        text-align: left;
+        padding: 0;
+        min-width: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+      .combo-card:hover {
+        border-color: #8ca8c8;
+        background: #2b3036;
+      }
+      .card-title {
+        padding: 18px 20px 12px;
+        color: #cbdff5;
+        font-weight: 600;
+        font-size: 16px;
+      }
+      .card-fields {
+        padding: 0 20px 18px;
+        display: grid;
+        gap: 7px;
+        flex: 1;
+      }
+      .card-fields > span {
+        display: grid;
+        grid-template-columns: minmax(105px, 1fr) minmax(0, 1.2fr);
+        gap: 12px;
+        font-size: 12px;
+      }
+      .card-fields em {
+        font-style: normal;
+        color: var(--muted);
+      }
+      .card-fields b {
+        font-weight: 400;
+        text-align: right;
+        overflow-wrap: anywhere;
+      }
+      .coverage-label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 400;
+      }
+      .card-bottom {
+        border-top: 1px solid var(--line);
+        padding: 10px 20px;
+        color: var(--blue);
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+      }
+      .back {
+        background: none;
+        border: 0;
+        color: var(--blue);
+        padding: 0;
+        margin: 0 0 16px;
+      }
+      .identity {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 8px;
+      }
+      .configuration-note {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 24px;
+      }
+      .config-section {
+        margin-bottom: 28px;
+      }
+      .section-title {
+        padding: 12px 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .field-row {
+        width: 100%;
+        border: 0;
+        border-bottom: 1px solid #383c42;
+        background: transparent;
+        display: grid;
+        grid-template-columns: 200px minmax(0, 1fr) 12px;
+        gap: 16px;
+        align-items: center;
+        padding: 13px 12px;
+        text-align: left;
+        min-height: 60px;
+      }
+      .field-row:hover {
+        background: var(--surface);
+      }
+      .field-row[aria-expanded="true"] {
+        background: var(--selected);
+        box-shadow: inset 2px 0 var(--blue);
+      }
+      .field-name {
+        color: #c9d8e9;
+        font-weight: 500;
+        overflow-wrap: anywhere;
+      }
+      .field-value {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: var(--field);
+        border: 1px solid #515761;
+        border-radius: 4px;
+        min-height: 32px;
+        padding: 4px 10px;
+        font-size: 13px;
+        overflow-wrap: anywhere;
+      }
+      .value-wrap {
+        min-width: 0;
+      }
+      .field-hint {
+        color: var(--muted);
+        font-size: 11px;
+        display: block;
+        margin-top: 4px;
+      }
+      .check {
+        width: 14px;
+        height: 14px;
+        flex-shrink: 0;
+        border: 1px solid #9ba8ba;
+        border-radius: 2px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 10px;
+      }
+      .check.on {
+        background: #4f6c8b;
+        color: white;
+      }
+      .chevron {
+        color: var(--blue);
+      }
+      .case-group {
+        border-top: 1px solid var(--line);
+        margin: 20px 0;
+      }
+      .case-group > summary {
+        padding: 16px 8px;
+        font-size: 16px;
+        font-weight: 500;
+      }
+      summary {
+        cursor: pointer;
+      }
+      .topics {
+        padding-left: 24px;
+      }
+      .topic {
+        border-top: 1px solid #383c42;
+      }
+      .topic > summary {
+        padding: 14px 8px;
+        color: #c8d8eb;
+      }
+      .topic[open] > summary {
+        color: var(--blue);
+      }
+      .topic-flow {
+        color: var(--muted);
+        display: block;
+        padding-left: 16px;
+        margin-top: 4px;
+        font-size: 12px;
+        font-weight: 400;
+        overflow-wrap: anywhere;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .inline-case {
+        padding: 10px 16px 20px;
+      }
+      .case-body + .case-body {
+        border-top: 1px solid var(--line);
+        margin-top: 20px;
+        padding-top: 22px;
+      }
+      .case-id {
+        font-size: 11px;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+        margin-bottom: 8px;
+      }
+      .steps {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        counter-reset: step;
+      }
+      .steps li {
+        display: grid;
+        grid-template-columns: 22px minmax(0, 1fr);
+        gap: 10px;
+        padding: 0 0 18px;
+        counter-increment: step;
+      }
+      .steps li:before {
+        content: counter(step, decimal-leading-zero);
+        font-size: 11px;
+        color: var(--muted);
+        padding-top: 3px;
+      }
+      .steps p {
+        margin: 0;
+        font-size: 13px;
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+      }
+      .steps .expected {
+        margin-top: 6px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .expected strong {
+        color: #b8cce4;
+        font-weight: 400;
+      }
+      .metadata {
+        color: var(--muted);
+        font-size: 12px;
+        margin: 8px 0;
+      }
+      .metadata summary {
+        padding: 8px 0;
+      }
+      .metadata p {
+        white-space: pre-line;
+        overflow-wrap: anywhere;
+      }
+      .metadata ul {
+        padding-left: 20px;
+      }
+      .scope-note {
+        font-size: 12px;
+        color: var(--muted);
+        border-left: 2px solid #727f91;
+        padding-left: 12px;
+        margin: 8px 0 24px;
+      }
+      .drawer {
+        position: fixed;
+        inset: 64px 0 0 auto;
+        width: 440px;
+        background: var(--surface);
+        border-left: 1px solid #626a75;
+        display: flex;
+        flex-direction: column;
+        z-index: 5;
+      }
+      .drawer-header {
+        padding: 20px 24px 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .drawer-top {
+        display: flex;
+        gap: 12px;
+        align-items: center;
+      }
+      .drawer h2 {
+        font-size: 19px;
+        flex: 1;
+        overflow-wrap: anywhere;
+      }
+      .icon-button {
+        background: transparent;
+        border: 1px solid #626a75;
+        border-radius: 4px;
+        padding: 2px 10px;
+        font-size: 22px;
+      }
+      .drawer-content {
+        padding: 24px;
+        overflow: auto;
+        flex: 1;
+      }
+      .drawer-context {
+        font-size: 11px;
+        color: var(--muted);
+        margin-bottom: 8px;
+      }
+      .drawer-target {
+        font-size: 13px;
+        margin-top: 12px;
+        color: #c9d8e9;
+        overflow-wrap: anywhere;
+      }
+      .subheading {
+        font-size: 13px;
+        color: var(--muted);
+        margin: 24px 0 14px;
+      }
+      body.detail-open main {
+        width: calc(100% - 440px);
+        margin-left: 0;
+        margin-right: 440px;
+        max-width: 1000px;
+      }
+      body.detail-open .field-row {
+        grid-template-columns: 160px minmax(0, 1fr) 12px;
+        gap: 12px;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 24px 0;
+      }
+      footer {
+        font-size: 12px;
+        color: var(--muted);
+        border-top: 1px solid var(--line);
+        padding-top: 20px;
+        margin-top: 32px;
+      }
+      @media (min-width: 1500px) {
+        body.detail-open main {
+          margin-left: auto;
+          margin-right: 464px;
+        }
+      }
+      @media (max-width: 1000px) {
+        body.detail-open .field-row {
+          grid-template-columns: minmax(0, 1fr) 12px;
+          gap: 8px;
+        }
+        body.detail-open .value-wrap {
+          grid-column: 1;
+        }
+        body.detail-open .field-row > .chevron {
+          grid-column: 2;
+          grid-row: 1/3;
+        }
+      }
+      @media (max-width: 700px) {
+        header {
+          min-height: 56px;
+          padding: 14px 18px;
+        }
+        header span {
+          margin-left: auto;
+        }
+        main {
+          padding: 0 18px;
+          margin-top: 24px;
+        }
+        h1 {
+          font-size: 22px;
+        }
+        .combination-grid {
+          grid-template-columns: 1fr;
+        }
+        .platform-heading {
+          flex-wrap: wrap;
+        }
+        select {
+          min-width: 0;
+          flex: 1;
+        }
+        .field-row {
+          grid-template-columns: minmax(0, 1fr) 12px;
+          gap: 8px;
+          padding: 12px 8px;
+        }
+        .value-wrap {
+          grid-column: 1;
+        }
+        .field-row > .chevron {
+          grid-column: 2;
+          grid-row: 1/3;
+        }
+        .drawer {
+          inset: 0;
+          width: 100%;
+        }
+        .drawer-header,
+        .drawer-content {
+          padding: 20px;
+        }
+        body.detail-open {
+          overflow: hidden;
+        }
+        body.detail-open main {
+          width: 100%;
+          margin: 24px auto;
+        }
+        .topics {
+          padding-left: 12px;
+        }
+        .inline-case {
+          padding: 8px 6px 16px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          scroll-behavior: auto !important;
+        }
+      }
+
+      .category-nav {
+        position: sticky;
+        top: 0;
+        z-index: 3;
+        background: var(--canvas);
+        padding-top: 12px;
+        margin-bottom: 0;
+      }
+      .browse-tools {
+        position: sticky;
+        top: 51px;
+        z-index: 3;
+        background: var(--canvas);
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        align-items: center;
+        padding: 12px 0 16px;
+        border-bottom: 1px solid var(--line);
+        margin-bottom: 24px;
+      }
+      .search-box {
+        flex: 1 1 230px;
+        min-width: 140px;
+      }
+      .search-box input {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #626a75;
+        border-radius: 4px;
+        padding: 7px 10px;
+        background: var(--field);
+        color: var(--ink);
+        font: inherit;
+      }
+      .search-box input:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
+      }
+      .browse-tools button {
+        background: none;
+        border: 1px solid #626a75;
+        border-radius: 4px;
+        padding: 7px 10px;
+        font-size: 12px;
+      }
+      .browse-tools button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      #search-status {
+        width: 100%;
+        font-size: 12px;
+        color: var(--muted);
+      }
+      .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+      }
+      .topic-flow {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .topic[open] > summary .topic-flow {
+        display: block;
+      }
+      .card-fields b {
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .card-title {
+        line-height: 1.6;
+      }
+      .case-group,
+      .topic,
+      .field-row,
+      .combo-card {
+        scroll-margin-top: 165px;
+      }
+      mark {
+        background: #4f4629;
+        color: #fff0b0;
+        border-radius: 2px;
+      }
+      .no-match {
+        color: var(--muted);
+        padding: 22px 16px;
+        border: 1px dashed #626a75;
+        border-radius: 4px;
+      }
+      @media (max-width: 700px) {
+        .browse-tools {
+          top: 51px;
+          gap: 7px;
+        }
+        .search-box {
+          flex-basis: 100%;
+        }
+        .browse-tools button {
+          padding: 5px 9px;
+        }
+        .case-group,
+        .topic,
+        .field-row,
+        .combo-card {
+          scroll-margin-top: 220px;
+        }
+      }
+
+      .qa-actions {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin: -8px 0 22px;
+      }
+      .qa-actions button,
+      .qa-button {
+        background: var(--surface);
+        color: var(--ink);
+        border: 1px solid #626a75;
+        border-radius: 4px;
+        padding: 6px 11px;
+        font: inherit;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .qa-actions span {
+        margin-left: auto;
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .qa-link {
+        background: none;
+        border: 0;
+        padding: 0 6px;
+        color: var(--blue);
+        font-size: 11px;
+      }
+      .draft-badge {
+        display: block;
+        color: #ddc998;
+        font-size: 11px;
+        margin-top: 4px;
+      }
+      .field-row .coverage-label {
+        display: none;
+      }
+      #qa-dialog {
+        width: min(820px, calc(100% - 32px));
+        max-height: 88vh;
+        color: var(--ink);
+        background: var(--surface);
+        border: 1px solid #626a75;
+        border-radius: 6px;
+        padding: 0;
+      }
+      #qa-dialog::backdrop {
+        background: #0009;
+      }
+      .qa-dialog-head {
+        position: sticky;
+        top: 0;
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        align-items: center;
+        background: var(--surface);
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--line);
+        z-index: 1;
+      }
+      #qa-close {
+        background: none;
+        color: var(--ink);
+        border: 0;
+        font-size: 24px;
+        padding: 0 8px;
+      }
+      #qa-body {
+        padding: 20px 22px;
+      }
+      #qa-foot {
+        padding: 14px 22px;
+        border-top: 1px solid var(--line);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+      .qa-note {
+        color: var(--muted);
+        font-size: 12px;
+        margin-bottom: 16px;
+      }
+      .qa-warning {
+        border-left: 2px solid #ad996a;
+        padding-left: 10px;
+        color: #d6c7a5;
+        font-size: 12px;
+      }
+      .qa-form label {
+        display: block;
+        margin: 12px 0;
+        font-size: 12px;
+        color: #c7d5e7;
+      }
+      .qa-form input:not([type="checkbox"]),
+      .qa-form textarea,
+      .qa-form select {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        margin-top: 6px;
+        padding: 7px 9px;
+        color: var(--ink);
+        border: 1px solid #626a75;
+        border-radius: 4px;
+        background: var(--field);
+        font: inherit;
+      }
+      .qa-form textarea {
+        min-height: 75px;
+        resize: vertical;
+      }
+      .qa-form input:focus-visible,
+      .qa-form textarea:focus-visible {
+        outline: 2px solid var(--blue);
+        outline-offset: 2px;
+      }
+      .qa-form small {
+        display: block;
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 5px;
+      }
+      .qa-edit-row {
+        display: grid;
+        grid-template-columns: minmax(140px, 36%) 1fr;
+        gap: 14px;
+        border-bottom: 1px solid var(--line);
+        padding: 10px 0;
+        align-items: center;
+      }
+      .qa-edit-row label {
+        margin: 0;
+      }
+      .qa-edit-row input,
+      .qa-edit-row select {
+        margin-top: 0 !important;
+      }
+      .qa-details {
+        margin: 16px 0;
+        border-top: 1px solid var(--line);
+        padding-top: 10px;
+      }
+      .qa-details summary {
+        font-size: 13px;
+      }
+      .qa-list-row {
+        border-bottom: 1px solid var(--line);
+        padding: 10px 0;
+        font-size: 12px;
+      }
+      .qa-list-row label {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        margin: 0;
+      }
+      .qa-list-row small {
+        display: block;
+        color: var(--muted);
+        margin-top: 3px;
+      }
+      .qa-stage {
+        padding: 10px 0;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        font-size: 12px;
+      }
+      .qa-error {
+        color: #efb8ad;
+        font-size: 12px;
+        white-space: pre-wrap;
+      }
+      .qa-button:disabled {
+        opacity: 0.45;
+        cursor: default;
+      }
+      @media (max-width: 700px) {
+        .qa-edit-row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+        .qa-dialog-head,
+        #qa-body,
+        #qa-foot {
+          padding-left: 16px;
+          padding-right: 16px;
+        }
+        .qa-actions span {
+          width: 100%;
+          margin: 0;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header><strong>PinK / 构建用例</strong><span>只读目录</span></header>
+    <main id="main">
+      <h1>构建测试用例</h1>
+      <nav class="category-nav" aria-label="用例分类">
+        <button data-route="platform">平台配置</button>
+        <button data-route="public">公共界面</button>
+      </nav>
+      <div class="browse-tools" role="search" aria-label="查找当前目录">
+        <label class="search-box"
+          ><span class="sr-only">查找当前页面的用例、字段或配置</span
+          ><input
+            id="catalog-search"
+            type="search"
+            placeholder="查找名称、字段、用例 ID…"
+            autocomplete="off"
+        /></label>
+        <button id="clear-search" type="button" hidden>清空</button>
+        <button id="expand-all" type="button">展开全部</button>
+        <button id="collapse-all" type="button">收起全部</button>
+        <span id="search-status" role="status" aria-live="polite"></span>
+      </div>
+      <div class="qa-actions" aria-label="用例辅助操作">
+        <button type="button" id="qa-files">用例文件</button>
+        <button type="button" id="qa-edit">编辑当前用例</button>
+        <button type="button" id="qa-materials">材料</button>
+        <button type="button" id="qa-plan">本轮计划</button>
+        <span id="qa-draft-status" role="status">浏览目录</span>
+      </div>
+      <div id="page"></div>
+      <p id="no-match" class="no-match" hidden>
+        当前页面没有匹配项。请更换关键词，或清空搜索查看全部。
+      </p>
+      <footer>配置、操作与预期来自已维护的用例。点击字段查看详情。</footer>
+    </main>
+    <aside
+      id="drawer"
+      class="drawer"
+      role="dialog"
+      aria-modal="false"
+      aria-labelledby="detail-title"
+      hidden
+    >
+      <div class="drawer-header">
+        <div id="detail-context" class="drawer-context"></div>
+        <div class="drawer-top">
+          <h2 id="detail-title"></h2>
+          <button
+            id="close-detail"
+            class="icon-button"
+            aria-label="关闭字段用例"
+          >
+            ×
+          </button>
+        </div>
+        <div id="detail-target" class="drawer-target"></div>
+      </div>
+      <div id="detail-content" class="drawer-content"></div>
+    </aside>
+    <dialog id="qa-dialog" aria-labelledby="qa-title">
+      <div class="qa-dialog-head">
+        <h2 id="qa-title"></h2>
+        <button type="button" id="qa-close" aria-label="关闭辅助窗口">×</button>
+      </div>
+      <div id="qa-body"></div>
+      <div id="qa-foot"></div>
+    </dialog>
+    <!-- CASE_CATALOG -->
+    <script>
+      (() => {
+        "use strict";
+        const $ = (id) => document.getElementById(id);
+        const data = JSON.parse($("catalog-data").textContent);
+        const basePresentation = structuredClone(data.presentation);
+        let model = data.presentation;
+        const byId = new Map(data.cases.map((c) => [c.id, c]));
+        const esc = (value) =>
+          String(value ?? "").replace(
+            /[&<>"']/g,
+            (c) =>
+              ({
+                "&": "&amp;",
+                "<": "&lt;",
+                ">": "&gt;",
+                '"': "&quot;",
+                "'": "&#39;",
+              })[c],
+          );
+        const enums = {
+          none: "无压缩",
+          merge_dep: "合并依赖",
+          merge_all_json: "合并所有 JSON",
+          subpackage: "小游戏分包",
+          "physics-ammo": "Bullet",
+          "physics-builtin": "Builtin",
+          "physics-cannon": "Cannon",
+          "physics-2d-builtin": "2D Builtin",
+          "physics-2d-box2d": "2D Box2D",
+          "physics-2d-box2d-wasm": "2D Box2D Wasm",
+          "physics-2d-box2d-jsb": "2D Box2D JSB",
+          zip: "Zip",
+          tbb: "TBB",
+          "inherit-project-setting": "继承工程设置",
+          portrait: "竖屏",
+          landscape: "横屏",
+          landscapeRight: "右横屏",
+          landscapeLeft: "左横屏",
+          auto: "自动",
+          taskFlow: "TaskFlow",
+          inline: "内联",
+          asmjs: "asm.js",
+          wasm: "Wasm",
+          on: "开启",
+          off: "关闭",
+        };
+        let currentPlatform;
+        let currentCombo;
+        let returnFocus;
+        const narrow = window.matchMedia("(max-width:700px)");
+        function displayValue(key, value) {
+          if (value && typeof value === "object") {
+            if (Object.hasOwn(value, "$material"))
+              return `材料引用：${value.$material}`;
+            if (Object.hasOwn(value, "$scene"))
+              return `运行时场景：${value.$scene}`;
+            if (privateField(key)) return "私有参数（不展示）";
+            return JSON.stringify(value);
+          }
+          if (privateField(key)) return "私有参数（不展示）";
+          if (typeof value === "boolean") return value ? "开启" : "关闭";
+          if (value === "") return "留空";
+          if (key === "sourceMaps")
+            return (
+              { false: "关闭", true: "独立", inline: "内联" }[value] ??
+              String(value)
+            );
+          if (key.endsWith(".JobSystem") && value === "none") return "无";
+          return enums[value] ?? String(value);
+        }
+        function safeLink(href) {
+          if (
+            typeof href !== "string" ||
+            (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(href) &&
+              !/^https?:\/\//i.test(href))
+          )
+            return "";
+          return href;
+        }
+        function links(items) {
+          return (items ?? [])
+            .filter(Boolean)
+            .map((s) => {
+              const href = safeLink(s.href);
+              return href
+                ? `<li><a href="${esc(href)}" target="_blank" rel="noopener">${esc(s.label ?? href)}</a>${s.version ? ` · ${esc(s.version)}` : ""}</li>`
+                : "";
+            })
+            .join("");
+        }
+        function caseBody(id, heading = true) {
+          const original = byId.get(id);
+          const live =
+            normalizedDocument?.platforms
+              .flatMap((p) => p.combinations)
+              .find((c) => c.id === id) ??
+            normalizedDocument?.conditionalScenarios.find((c) => c.id === id);
+          if (!original && !live) return "";
+          const c = {
+            ...original,
+            id,
+            ...(live
+              ? {
+                  title: live.title,
+                  steps: live.steps ?? original?.steps ?? [],
+                  notes: Array.isArray(live.notes)
+                    ? live.notes.join("；")
+                    : (live.notes ?? original?.notes),
+                  prerequisites: Array.isArray(live.materials)
+                    ? live.materials.join("；")
+                    : original?.prerequisites,
+                }
+              : {}),
+          };
+          const title = c.id.startsWith("configuration.openpaas.")
+            ? `${c.title}（通用入口，OpenPaaS 使用专属流程）`
+            : c.title;
+          return `<article class="case-body" data-case-id="${esc(id)}">
+            ${heading ? `<h3>${esc(title)}</h3>` : ""}
+            <div class="case-id">${esc(id)} <button type="button" class="qa-link" data-qa-case="${esc(id)}">补充建议</button></div>
+            ${c.applicability?.status === "conditional" ? `<p class="scope-note">${esc(c.applicability.reason)}</p>` : ""}
+            <ol class="steps">${(c.steps ?? []).map((s) => `<li><div><p>${esc(s.action)}</p><p class="expected"><strong>预期</strong>　${esc(s.expected)}</p></div></li>`).join("")}</ol>
+            <details class="metadata"><summary>前提与依据</summary>
+              ${c.prerequisites ? `<p>${esc(c.prerequisites)}</p>` : ""}
+              ${c.notes ? `<p>${esc(c.notes)}</p>` : ""}
+              ${c.grouping ? `<p>${esc(c.grouping)}</p>` : ""}
+              <ul>${links(c.sources)}</ul>
+              ${c.evidence?.length ? `<p>以下为原目录历史记录，尚未与当前载入文档的 SHA256 关联，不能证明修改后的用例已通过。</p><ul>${links(c.evidence)}</ul>` : ""}
+            </details>
+          </article>`;
+        }
+        function topicCase(id) {
+          const c = byId.get(id);
+          const title = c.id.startsWith("configuration.openpaas.")
+            ? `${c.title}（通用入口）`
+            : c.title;
+          return `<details class="topic" data-search-entry data-topic-case="${esc(id)}"><summary>${esc(title)}</summary><div class="inline-case">${caseBody(id, false)}</div></details>`;
+        }
+        function platformPicker() {
+          return `<div class="platform-heading"><label for="platform-select">平台</label><select id="platform-select">${model.platforms.map((p) => `<option value="${esc(p.id)}" ${p.id === currentPlatform.id ? "selected" : ""}>${esc(p.name)}</option>`).join("")}</select></div>`;
+        }
+        function overview() {
+          $("page").innerHTML =
+            platformPicker() +
+            `<p class="configuration-note">四组用例定稿 · 选择组合查看本平台搭配</p>` +
+            `<div class="combination-grid">${currentPlatform.combinations
+              .map((c) => {
+                if (c.kind === "conditional")
+                  return `<button class="combo-card" data-search-entry data-combo="${esc(c.id)}"><span class="card-title">${esc(c.title)}</span><span class="card-fields"><span><em>条件场景</em><b>L10N、资源及本平台特殊前提</b></span><span><em>适用范围</em><b>按场景选择，不全部同时开启</b></span></span><span class="card-bottom">查看启用条件与检查点 <span aria-hidden="true">›</span></span></button>`;
+                const fields = c.summaryKeys
+                  .map((key) => {
+                    const row = currentPlatform.fields.find(
+                      (f) => f.key === key,
+                    );
+                    return `<span><em>${esc(row?.label ?? key)}</em><b>${esc(displayValue(key, c.values[key]))}</b></span>`;
+                  })
+                  .join("");
+                const preserved = c.summaryKeys.some((key) =>
+                  key.startsWith("packages."),
+                )
+                  ? ""
+                  : "<span><em>平台专用配置</em><b>沿用当前配置</b></span>";
+                return `<button class="combo-card" data-search-entry data-combo="${esc(c.id)}"><span class="card-title">${esc(c.title)}</span><span class="card-fields">${fields}${c.id.startsWith("planned.") ? "" : preserved}</span><span class="card-bottom">完整配置与用例 <span aria-hidden="true">›</span></span></button>`;
+              })
+              .join("")}</div>` +
+            (currentPlatform.standaloneIds.length
+              ? `<details class="case-group"><summary>平台界面专项</summary><div class="topics">${currentPlatform.standaloneIds.map(topicCase).join("")}</div></details>`
+              : "");
+        }
+        function valueFor(row) {
+          if (currentCombo.excludedFields?.includes(row.key))
+            return "本平台不适用（已从执行目标排除）";
+          if (row.unavailable) return row.unavailable;
+          return Object.hasOwn(currentCombo.values, row.key)
+            ? currentCombo.values[row.key]
+            : currentCombo.unspecified;
+        }
+        function valueMarkup(row) {
+          const value = valueFor(row);
+          return `<span class="field-value">${typeof value === "boolean" ? `<span class="check ${value ? "on" : ""}" aria-hidden="true">${value ? "✓" : ""}</span>` : ""}${esc(displayValue(row.key, value))}</span><small class="coverage-label">${esc(coverageLabel(fieldCoverage(row.key).state))}</small>`;
+        }
+        function coverageLabel(state) {
+          return model.coveragePolicy.legend[state] ?? "待补前提";
+        }
+        function fieldCoverage(key) {
+          return (
+            currentCombo.fieldCoverage?.[key] ?? {
+              state: "retain",
+              condition: "按实际可见性回读。",
+              expected: "本组未指定目标，只保留回读，不计修改或候选覆盖。",
+            }
+          );
+        }
+        function condition(row) {
+          const notes = [...(currentCombo.conditions?.[row.key] ?? [])];
+          if (currentCombo.hidden.includes(row.key))
+            notes.push("目标状态下隐藏；任务表示按已确认合同核对");
+          if (currentCombo.hiddenInitially.includes(row.key))
+            notes.push("初态隐藏；先操作父项，再配置本字段");
+          if (currentCombo.retained.includes(row.key))
+            notes.push("回读并核对保持一致");
+          return notes.join("；");
+        }
+        function configuration() {
+          if (currentCombo.kind === "conditional") {
+            conditionalConfiguration();
+            return;
+          }
+          $("page").innerHTML =
+            `<button class="back" data-back>‹ 返回 ${esc(currentPlatform.name)} 的组合</button>
+            <div class="identity">${esc(currentPlatform.name)}</div><h2 id="combo-title" tabindex="-1">${esc(currentCombo.title)}</h2>
+            <p class="configuration-note">明确检查 / 仅保留回读 / 待补材料或候选均为设计分类，不代表已执行通过。</p>` +
+            `<section class="config-section"><h3 class="section-title">测试输入</h3><dl>${Object.entries(
+              currentCombo.inputs,
+            )
+              .map(
+                ([label, value]) =>
+                  `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`,
+              )
+              .join(
+                "",
+              )}</dl>${currentCombo.materials.length ? `<p class="scope-note">材料前提：${esc(currentCombo.materials.join("；"))}</p>` : ""}</section>` +
+            [
+              ["common", "公共配置"],
+              ["special", "平台专用配置"],
+            ]
+              .map(
+                ([group, title]) =>
+                  `<section class="config-section"><h3 class="section-title">${title}</h3>${currentPlatform.fields
+                    .filter(
+                      (f) =>
+                        f.section === group &&
+                        !f.key.startsWith("packages.localization-editor."),
+                    )
+                    .map(
+                      (row) =>
+                        `<button class="field-row" data-search-entry data-field="${esc(row.key)}" aria-expanded="false" aria-controls="drawer">
+                <span class="field-name">${esc(row.label)}</span><span class="value-wrap">${valueMarkup(row)}${condition(row) ? `<small class="field-hint">${esc(condition(row))}</small>` : ""}</span><span class="chevron" aria-hidden="true">›</span>
+              </button>`,
+                    )
+                    .join("")}</section>`,
+              )
+              .join("") +
+            (currentCombo.variants.length
+              ? `<details class="case-group"><summary>本组合的平台配置变体（${currentCombo.variants.length}）</summary><div class="topics">${currentCombo.variants
+                  .map(
+                    (v) =>
+                      `<details class="topic"><summary>${esc(v.title)} <span class="coverage-label">${esc(coverageLabel(v.coverageState))}</span></summary><div class="inline-case"><p>沿用本组合，仅覆盖以下目标：</p><dl>${Object.entries(
+                        v.values,
+                      )
+                        .map(
+                          ([key, value]) =>
+                            `<dt>${esc(currentPlatform.fields.find((f) => f.key === key)?.label ?? key)}</dt><dd>${esc(displayValue(key, value))}</dd>`,
+                        )
+                        .join(
+                          "",
+                        )}</dl><p>覆盖：${esc(v.covers)}</p><p>预期：${esc(v.expectation)}</p><p>初态：${esc(v.initialCondition)}</p>${v.requires ? `<p>前提：${esc(v.requires)}</p>` : ""}${v.note ? `<p>${esc(v.note)}</p>` : ""}</div></details>`,
+                  )
+                  .join("")}</div></details>`
+              : "") +
+            `<details class="case-group" data-search-entry><summary>组合整体检查</summary><div class="inline-case">${caseBody(currentCombo.id)}</div></details>`;
+        }
+        function conditionalConfiguration() {
+          const platformNames = (ids) =>
+            ids
+              .map((id) => model.platforms.find((p) => p.id === id)?.name ?? id)
+              .join("、");
+          const inputLabel = (key) =>
+            currentPlatform.fields.find(
+              (f) =>
+                f.key === key ||
+                f.key === `packages.${currentPlatform.id}.${key}`,
+            )?.label ?? key;
+          $("page").innerHTML =
+            `<button class="back" data-back>‹ 返回 ${esc(currentPlatform.name)} 的组合</button>
+            <div class="identity">${esc(currentPlatform.name)}</div><h2 id="combo-title" tabindex="-1">${esc(currentCombo.title)}</h2>
+            <p class="configuration-note">按前提选择场景 · 只读用例</p>
+            <p>正向构建以<a href="#platform=${encodeURIComponent(currentPlatform.id)}&amp;combination=${encodeURIComponent(`review.publish.${currentPlatform.id}`)}">本平台发布组</a>为基础。L10N 未启用时语言选项不存在是正确预期；启用并就绪后才操作。</p>
+            <details class="case-group"><summary>表单反向校验</summary><div class="topics">
+            <p>公共字段由 Web 桌面代表覆盖。已定义执行操作的样本随完整用例导出，按 ID 单独选择，仅检查输入、提示、按钮和恢复，不点击构建。样本定义不代表实测通过，实机范围与受阻项以对应报告为准。</p>
+            ${currentPlatform.id !== "web-desktop" ? `<p><a href="#platform=web-desktop&amp;combination=review.conditional.web-desktop">查看公共字段反向用例</a></p>` : ""}
+            ${(
+              (normalizedDocument ?? caseDocument ?? data.executionSource)
+                ?.formValidation?.cases ?? []
+            )
+              .filter((c) => c.platforms.includes(currentPlatform.id))
+              .map(
+                (c) =>
+                  `<details class="topic" data-search-entry><summary>${esc(c.title)}</summary><div class="inline-case"><p>${esc(c.condition)}</p>${(
+                    c.samples ?? []
+                  )
+                    .filter((s) => s.platforms.includes(currentPlatform.id))
+                    .map(
+                      (s) =>
+                        `<details class="topic"><summary>${esc(s.title)}${s.kind === "applicability-only" ? "（范围说明）" : ""}</summary><div class="inline-case"><dl>${Object.entries(
+                          {
+                            前提: s.condition,
+                            输入: s.input,
+                            触发动作: s.trigger,
+                            预期提示: s.prompt,
+                            预期修正: s.correction,
+                            按钮状态: s.button,
+                            任务行为: s.task,
+                            恢复检查: s.recovery,
+                            执行入口:
+                              s.execution ||
+                              s.executionByPlatform?.[currentPlatform.id]
+                                ? `${s.id}.${currentPlatform.id}`
+                                : s.kind === "applicability-only"
+                                  ? "范围说明，不计执行覆盖"
+                                  : (s.executionBlocker ?? "缺少结构化操作"),
+                          },
+                        )
+                          .map(
+                            ([label, value]) =>
+                              `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`,
+                          )
+                          .join(
+                            "",
+                          )}</dl><p class="muted">${esc(s.evidence)}</p></div></details>`,
+                    )
+                    .join(
+                      "",
+                    )}<details class="metadata"><summary>预期依据与证据边界</summary><p>${esc(c.id)} · ${esc(c.coverage)}</p><dl>${Object.entries(
+                    c.basis ?? {},
+                  )
+                    .map(
+                      ([key, value]) =>
+                        `<dt>${esc({ promptAndCorrection: "提示与修正", buttonAndTask: "按钮与任务", recovery: "恢复" }[key] ?? key)}</dt><dd>${esc(value)}</dd>`,
+                    )
+                    .join(
+                      "",
+                    )}</dl><p>${esc((c.sourceRefs ?? []).map((key) => (normalizedDocument ?? caseDocument ?? data.executionSource)?.formValidation?.sources?.[key] ?? key).join("；"))}</p></details></div></details>`,
+              )
+              .join("")}
+            </div></details>
+            <div class="topics">${currentCombo.scenarios
+              .map((s) => {
+                const shared =
+                  s.representativePlatforms.length < s.platforms.length;
+                const scope =
+                  s.platforms.length === model.platforms.length
+                    ? "18 平台条件适用"
+                    : platformNames(s.platforms);
+                return `<details class="topic" data-search-entry><summary>${esc(s.title)} <span class="coverage-label">${esc(coverageLabel(s.coverageState))}</span></summary><div class="inline-case">
+                <p>适用：${esc(scope)}${shared ? `；共享检查默认代表：${esc(platformNames(s.representativePlatforms))}，其余平台仅补差异` : ""}。</p>
+                ${s.pendingQuestion ? `<p>待补前提：${esc(s.pendingQuestion)}；前提满足后才执行对应分支。</p>` : ""}
+                <h3 class="section-title">启用条件</h3><ul>${s.enableConditions.map((text) => `<li>${esc(text)}</li>`).join("")}</ul>
+                <h3 class="section-title">测试输入</h3><dl>${Object.entries(
+                  s.inputs,
+                )
+                  .map(
+                    ([key, value]) =>
+                      `<dt>${esc(inputLabel(key))}</dt><dd>${esc(displayValue(key, value))}</dd>`,
+                  )
+                  .join("")}</dl>
+                ${s.materials.length ? `<p>材料前提：${esc(s.materials.join("；"))}</p>` : ""}
+                <h3 class="section-title">步骤与预期</h3><ol>${s.steps.map((step) => `<li>${esc(step.action)}<p>${esc(step.expected)}</p></li>`).join("")}</ol>
+                <h3 class="section-title">检查点</h3><ul>${s.checkpoints.map((text) => `<li>${esc(text)}</li>`).join("")}</ul>
+                <p>终点：${esc(s.endpoint)}。</p>${s.expectationBasis ? `<p class="muted">${esc(s.expectationBasis)}</p>` : ""}${s.notes.length ? `<p>${esc(s.notes.join("；"))}</p>` : ""}
+              </div></details>`;
+              })
+              .join("")}</div>
+            <details class="case-group"><summary>待确认的规则</summary><div class="topics">${currentCombo.reviewItems.map((item) => `<details class="topic" data-search-entry><summary>${esc(item.title)} <span class="coverage-label">待确认</span></summary><div class="inline-case"><p>所属组：${esc(item.group)}</p><p>输入提案：${esc(item.inputs)}</p><p>需确认：${esc(item.question)}</p></div></details>`).join("")}</div></details>
+            <details class="case-group"><summary>基础配置、分组与恢复</summary><div class="inline-case">${Object.values(
+              model.conditionalPolicy,
+            )
+              .map((text) => `<p>${esc(text)}</p>`)
+              .join("")}</div></details>`;
+        }
+        function publicPage() {
+          $("page").innerHTML = model.publicGroups
+            .map(
+              (g) =>
+                `<details class="case-group"><summary>${esc(g.name)}</summary><div class="topics">${g.topics
+                  .map(
+                    (t) =>
+                      `<details class="topic" data-search-entry><summary>${esc(t.name)}<span class="topic-flow">${esc(t.caseIds.map((id) => byId.get(id).steps?.[0]?.action ?? byId.get(id).title).join("；"))}</span></summary><div class="inline-case">${t.caseIds.map((id) => caseBody(id)).join("")}</div></details>`,
+                  )
+                  .join("")}</div></details>`,
+            )
+            .join("");
+        }
+        function closeDetail(focus = true) {
+          $("drawer").hidden = true;
+          $("drawer").setAttribute("aria-modal", "false");
+          $("main").inert = false;
+          document.body.classList.remove("detail-open");
+          document
+            .querySelectorAll("[data-field]")
+            .forEach((el) => el.setAttribute("aria-expanded", "false"));
+          if (focus && returnFocus?.isConnected)
+            returnFocus.focus({ preventScroll: true });
+        }
+        function setDrawerMode() {
+          if ($("drawer").hidden) return;
+          $("drawer").setAttribute("aria-modal", String(narrow.matches));
+          $("main").inert = narrow.matches;
+        }
+        function openField(key, trigger) {
+          const row = currentPlatform.fields.find((r) => r.key === key);
+          if (!row) return;
+          returnFocus = trigger;
+          $("detail-context").textContent =
+            `${currentPlatform.name} / ${currentCombo.title} / ${row.section === "common" ? "公共配置" : "平台专用配置"}`;
+          $("detail-title").textContent = row.label;
+          $("detail-target").textContent = displayValue(row.key, valueFor(row));
+          const fixed =
+            Object.hasOwn(currentCombo.values, key) && !row.unavailable;
+          const coverage = fieldCoverage(key);
+          const own = fixed && coverage.state === "specified";
+          const initial = Object.hasOwn(currentCombo.initial, key)
+            ? `<p class="scope-note">要求初态：${esc(displayValue(key, currentCombo.initial[key]))}</p>`
+            : "";
+          const linked = row.refs.filter((id) => id !== currentCombo.id);
+          $("detail-content").innerHTML =
+            `<p class="scope-note">${esc(coverageLabel(coverage.state))}：${esc(coverage.expected)}</p><p class="scope-note">启用条件：${esc(coverage.condition)}</p>` +
+            initial +
+            (condition(row)
+              ? `<p class="scope-note">${esc(condition(row))}</p>`
+              : "") +
+            (own
+              ? `<div class="subheading">本组合关联用例</div>${caseBody(currentCombo.id)}`
+              : `<p class="scope-note">${excluded ? "共享定义明确排除此平台字段，不作为本组合执行目标；相关专项仍须独立核对适用性。" : row.unavailable ? esc(row.unavailable) : "本组合未给这个字段指定固定目标。下方相关专项独立检查，不表示本组合执行了全部分支。"}</p>`) +
+            (linked.length
+              ? `<div class="subheading">相关独立专项</div>${linked.map((id) => caseBody(id)).join("")}`
+              : `<p class="metadata">此字段暂无单独关联的专项；保留组合整体检查与字段来源。</p>`) +
+            `<details class="metadata"><summary>字段来源</summary><p>${esc(key)}</p><ul>${links([row.source, currentCombo.source])}</ul><ul>${row.bindings.map((binding) => `<li>${esc(binding.label)}${binding.choice ? ` · ${esc(binding.choice)}` : ""}${binding.position ? ` · ${esc(binding.position)}` : ""}（${binding.kind === "keyed" ? "带字段标识的控件" : binding.kind === "custom" ? "平台自定义控件" : "条件控件"}）</li>`).join("")}</ul><p>绑定来自 1958 当前 UI 及注册视图。目标值来自组合定义；沿用项无固定目标，不是本次实测值。控件可用性按本组合条件判断，不能套用取证时的单一状态。</p></details>`;
+          $("drawer").hidden = false;
+          $("detail-content").scrollTop = 0;
+          document.body.classList.add("detail-open");
+          document
+            .querySelectorAll("[data-field]")
+            .forEach((el) =>
+              el.setAttribute(
+                "aria-expanded",
+                String(el.dataset.field === key),
+              ),
+            );
+          setDrawerMode();
+          $("close-detail").focus({ preventScroll: true });
+        }
+
+        const materialCandidates = new Map();
+        const planSelection = new Set();
+        const runInputs = {
+          pink: "",
+          project: "",
+          cases: "",
+          materials: "",
+          report: "",
+        };
+        let qaReturnFocus = null,
+          qaDirty = false;
+        let caseDocument = null,
+          normalizedDocument = null,
+          documentHash = "",
+          documentFileName = "",
+          documentDirty = false,
+          exportedHash = "",
+          documentGeneration = 0;
+        let privateManifest = null,
+          privateManifestName = "",
+          importedPlan = null,
+          planGeneration = -1;
+        function privateField(key) {
+          return (
+            !!(
+              caseDocument?.fieldTypes?.[key]?.sensitive ??
+              data.executionSource?.fieldTypes?.[key]?.sensitive
+            ) || /password|passphrase|secret|token|appkey/i.test(key)
+          );
+        }
+        function updateDraftStatus() {
+          $("qa-draft-status").textContent = caseDocument
+            ? `${caseDocument.revision} · ${documentDirty ? "未导出更改" : exportedHash === documentHash ? "已请求导出（请确认下载）" : "已载入用例文档"} · 执行快照未加载`
+            : "浏览目录 · 正式文档等待共享合同注入或导入";
+        }
+        function contract() {
+          const api =
+            globalThis.PinkCaseContract ??
+            (typeof PinkCaseContract !== "undefined" ? PinkCaseContract : null);
+          if (
+            !api ||
+            typeof api.validate !== "function" ||
+            typeof api.normalize !== "function"
+          )
+            throw Error(
+              "共享校验器 PinkCaseContract 尚未注入；当前文档保持不变。",
+            );
+          return api;
+        }
+
+        function compileDocument(candidate) {
+          const api = contract();
+          api.validate(candidate);
+          // Privacy boundary only; all field/type/reference legality comes from the shared validator.
+          if (Object.hasOwn(candidate, "bindings"))
+            throw Error(
+              "此文件含私有材料 bindings，请从材料入口单独载入，不能作为公共用例导出。",
+            );
+          return api.normalize(candidate);
+        }
+        function presentationFor(doc) {
+          const next = structuredClone(basePresentation);
+          next.platforms = doc.platforms.map((platform) => {
+            const base = basePresentation.platforms.find(
+              (p) => p.id === platform.id,
+            );
+            const fields = structuredClone(base?.fields ?? []);
+            const known = new Set(fields.map((f) => f.key));
+            const keys = new Set(
+              platform.combinations.flatMap((c) => Object.keys(c.values)),
+            );
+            for (const key of keys)
+              if (!known.has(key))
+                fields.push({
+                  key,
+                  label: key,
+                  section: key.startsWith("packages.") ? "special" : "common",
+                  refs: [],
+                });
+            return {
+              ...base,
+              id: platform.id,
+              name: platform.label ?? base?.name ?? platform.id,
+              fields,
+              standaloneIds: base?.standaloneIds ?? [],
+              combinations: platform.combinations.map((c) => {
+                const original =
+                  base?.combinations.find((old) => old.id === c.id) ?? {};
+                return {
+                  ...original,
+                  ...c,
+                  values: structuredClone(c.values),
+                  scenarios: (c.scenarioIds ?? [])
+                    .map((id) =>
+                      doc.conditionalScenarios.find((s) => s.id === id),
+                    )
+                    .filter(Boolean),
+                  reviewItems: (c.reviewItemIds ?? [])
+                    .map((id) =>
+                      (doc.reviewItems ?? []).find((v) => v.id === id),
+                    )
+                    .filter(Boolean),
+                  summaryKeys: (
+                    original.summaryKeys ?? Object.keys(c.values).slice(0, 5)
+                  ).filter((key) => Object.hasOwn(c.values, key)),
+                  initial: c.initial ?? {},
+                  hidden: [],
+                  hiddenInitially: [],
+                  retained: Object.entries(c.fieldCoverage ?? {})
+                    .filter(([, v]) => v.state === "retain")
+                    .map(([key]) => key),
+                  conditions: c.conditions ?? {},
+                  unspecified: "未指定固定目标",
+                  orderedKeys: c.configurationOrder ?? Object.keys(c.values),
+                  variants: c.variants ?? [],
+                  inputs: c.inputs ?? {},
+                  materials: c.materials ?? [],
+                };
+              }),
+            };
+          });
+          next.conditionalPolicy =
+            doc.conditionalPolicy ?? next.conditionalPolicy;
+          next.coveragePolicy = doc.coveragePolicy ?? next.coveragePolicy;
+          next.review = {
+            status: doc.status ?? "",
+            decisions: doc.decisions ?? [],
+          };
+          return next;
+        }
+        function installDocument(candidate, normalized, hash, name, dirty) {
+          // Prepare every dependent view before committing: a failing import never partially replaces the current document.
+          const presentation = presentationFor(normalized);
+          caseDocument = structuredClone(candidate);
+          normalizedDocument = normalized;
+          model = presentation;
+          documentHash = hash;
+          documentFileName = name;
+          documentDirty = dirty;
+          documentGeneration++;
+          planSelection.clear();
+          browsingStates.clear();
+          updateDraftStatus();
+        }
+        async function hashBytes(bytes) {
+          if (!globalThis.crypto?.subtle)
+            throw Error("当前浏览器无法计算 SHA256；文档保持不变。");
+          const digest = await crypto.subtle.digest("SHA-256", bytes);
+          return [...new Uint8Array(digest)]
+            .map((b) => b.toString(16).padStart(2, "0"))
+            .join("");
+        }
+        async function hashText(text) {
+          return hashBytes(new TextEncoder().encode(text));
+        }
+        function documentText(doc = caseDocument) {
+          return JSON.stringify(doc, null, 2) + "\n";
+        }
+        async function importDocumentText(text, name, sourceHash) {
+          const generation = documentGeneration;
+          const candidate = JSON.parse(text.replace(/^\uFEFF/, "")),
+            normalized = compileDocument(candidate),
+            hash = sourceHash ?? (await hashText(text));
+          if (generation !== documentGeneration)
+            throw Error("校验期间文档已变化，请重新导入。");
+          if (
+            documentDirty &&
+            !window.confirm("当前有未导出的用例修改。放弃这些修改并导入？")
+          )
+            return false;
+          installDocument(candidate, normalized, hash, name, false);
+          exportedHash = "";
+          render();
+          return true;
+        }
+        function initialiseDocument() {
+          if (!data.executionSource) {
+            updateDraftStatus();
+            return;
+          }
+          try {
+            const normalized = compileDocument(data.executionSource);
+            installDocument(
+              data.executionSource,
+              normalized,
+              data.executionSourceHash ?? "",
+              "页面内嵌用例",
+              false,
+            );
+          } catch {
+            updateDraftStatus();
+          }
+        }
+        async function exportDocument() {
+          if (!caseDocument) throw Error("尚未载入正式用例文档。");
+          const generation = documentGeneration;
+          compileDocument(caseDocument);
+          const text = documentText(),
+            hash = await hashText(text);
+          const url = URL.createObjectURL(
+            new Blob([text], { type: "application/json;charset=utf-8" }),
+          );
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "public-combinations.json";
+          a.click();
+          setTimeout(() => URL.revokeObjectURL(url), 1000);
+          exportedHash = hash;
+          if (generation === documentGeneration) {
+            documentHash = hash;
+            documentDirty = false;
+          }
+          updateDraftStatus();
+          return hash;
+        }
+        function filePanel() {
+          qaModal(
+            "用例文档",
+            `<div class="qa-form"><p class="qa-note">使用执行侧同一份 schemaVersion:1 合同校验与合并模板。导入或导出不会写回源文件，也不会加载执行器。</p><p>当前：${esc(documentFileName || "未载入")}<br>修订：${esc(caseDocument?.revision ?? "未取得")}</p><p class="qa-note">文档 SHA256：${esc(documentHash || "未取得")}<br>状态：${documentDirty ? "未导出更改" : exportedHash === documentHash && exportedHash ? "已请求下载导出文件" : "文档已载入或尚未提供"}<br>执行器已加载快照：未取得</p><label>导入完整用例 JSON<input type="file" id="qa-import-cases" accept=".json,application/json"></label><label>修订标记<input id="qa-revision" value="${esc(caseDocument?.revision ?? "")}" ${caseDocument ? "" : "disabled"}></label><button class="qa-button" id="qa-save-revision" ${caseDocument ? "" : "disabled"}>应用修订标记</button><p id="qa-file-error" class="qa-error" role="status"></p></div>`,
+            `<button class="qa-button" id="qa-export-cases" ${caseDocument ? "" : "disabled"}>导出完整用例 JSON</button>`,
+          );
+          $("qa-import-cases").onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+              if (
+                await importDocumentText(
+                  await file.text(),
+                  file.name,
+                  await hashBytes(await file.arrayBuffer()),
+                )
+              )
+                filePanel();
+            } catch (error) {
+              $("qa-file-error").textContent = String(error.message);
+            }
+          };
+          $("qa-save-revision").onclick = async () => {
+            try {
+              const next = structuredClone(caseDocument);
+              next.revision = $("qa-revision").value;
+              const normalized = compileDocument(next),
+                hash = await hashText(documentText(next));
+              installDocument(next, normalized, hash, documentFileName, true);
+              render();
+              filePanel();
+            } catch (e) {
+              $("qa-file-error").textContent = e.message;
+            }
+          };
+          $("qa-export-cases").onclick = async () => {
+            try {
+              await exportDocument();
+              filePanel();
+            } catch (e) {
+              $("qa-file-error").textContent = e.message;
+            }
+          };
+        }
+        function qaModal(title, body, foot = "") {
+          closeDetail(false);
+          qaReturnFocus = document.activeElement;
+          $("qa-title").textContent = title;
+          $("qa-body").innerHTML = body;
+          $("qa-foot").innerHTML = foot;
+          qaDirty = false;
+          if (!$("qa-dialog").open) $("qa-dialog").showModal();
+        }
+        function qaClose(force = false) {
+          if (
+            !force &&
+            qaDirty &&
+            !window.confirm("本次编辑尚未保留。确定放弃这次修改并关闭？")
+          )
+            return;
+          $("qa-dialog").close();
+          qaDirty = false;
+          if (qaReturnFocus?.isConnected)
+            qaReturnFocus.focus({ preventScroll: true });
+        }
+
+        function editorControl(key, value, type, index) {
+          if (
+            (type.sensitive || privateField(key)) &&
+            (!value || typeof value !== "object")
+          ) {
+            return `<select data-value-mode="${index}"><option value="preserve">保留现有测试值（不展示）</option><option value="material">改为私有材料引用</option></select><div data-literal-box="${index}" hidden></div><div data-reference-box="${index}" hidden><input data-reference="${index}" placeholder="例如 androidSigning.password"></div><small>保留源值不变，不将脱敏占位符写回；需要私有输入时改用材料引用。</small>`;
+          }
+          const reference =
+            value && typeof value === "object" && !Array.isArray(value)
+              ? Object.keys(value)[0]
+              : "";
+          const mode =
+            reference === "$material"
+              ? "material"
+              : reference === "$scene"
+                ? "scene"
+                : "literal";
+          const sceneAllowed =
+            ["startScene", "scenes"].includes(key) && type.kind !== "array";
+          const modes = [
+            ...(!type.sensitive ? ["literal"] : []),
+            "material",
+            ...(sceneAllowed ? ["scene"] : []),
+          ];
+          const actualMode = modes.includes(mode) ? mode : modes[0];
+          let literal = "";
+          if (type.kind === "boolean")
+            literal = `<select data-literal="${index}"><option value="true" ${value === true ? "selected" : ""}>开启</option><option value="false" ${value === false ? "selected" : ""}>关闭</option></select>`;
+          else if (type.choices?.length)
+            literal = `<select data-literal="${index}">${type.choices.map((v) => `<option value="${esc(JSON.stringify(v))}" ${v === value ? "selected" : ""}>${esc(displayValue(key, v))}</option>`).join("")}</select>`;
+          else if (["object", "array"].includes(type.kind))
+            literal = `<textarea data-literal="${index}">${esc(JSON.stringify(mode === "literal" ? value : type.kind === "array" ? [] : {}, null, 2))}</textarea>`;
+          else
+            literal = `<input data-literal="${index}" type="${type.kind === "number" ? "number" : "text"}" ${type.kind === "number" ? 'step="any"' : ""} value="${esc(mode === "literal" ? value : "")}">`;
+          return `<select data-value-mode="${index}">${modes.map((m) => `<option value="${m}" ${m === actualMode ? "selected" : ""}>${{ literal: "普通目标值", material: "材料引用", scene: "运行时场景角色" }[m]}</option>`).join("")}</select><div data-literal-box="${index}" ${actualMode === "literal" ? "" : "hidden"}>${literal}</div><div data-reference-box="${index}" ${actualMode === "literal" ? "hidden" : ""}><input data-reference="${index}" value="${esc(mode === "material" ? value.$material : mode === "scene" ? value.$scene : "")}" placeholder="${sceneAllowed ? "材料名.参数 或 primary/secondary" : "例如 androidSigning.path"}"></div><small>${type.sensitive ? "私有参数只接受材料引用，不在公共用例输入明文。" : type.choices ? "候选来自共享字段合同，仍需运行时预检。" : "动态候选仅作类型校验，不证明实机存在。"}${type.kind === "array" ? ' 数组可写入场景引用，如 [{"$scene":"primary"}]。' : ""}</small>`;
+        }
+        function findRawCombo(id, doc = caseDocument) {
+          for (const platform of doc?.platforms ?? []) {
+            const combo = platform.combinations.find((c) => c.id === id);
+            if (combo) return { platform, combo };
+          }
+        }
+        function editCase(id = currentCombo?.id) {
+          if (!caseDocument) {
+            filePanel();
+            return;
+          }
+          const raw = findRawCombo(id);
+          if (!raw) {
+            qaModal(
+              "用例编辑范围",
+              "<p>当前正式文件不包含此目录专项。请在原用例维护流程修改公共 UI 定义；本页不把说明文字转换为可执行步骤。</p>",
+            );
+            return;
+          }
+          const template = caseDocument.templates.find(
+            (t) => t.id === raw.combo.template,
+          );
+          const normalized = normalizedDocument.platforms
+            .find((p) => p.id === raw.platform.id)
+            .combinations.find((c) => c.id === id);
+          const keys = Object.keys(normalized.values).filter(
+            (key) => normalized.fieldCoverage?.[key]?.state !== "retain",
+          );
+          qaModal(
+            "编辑平台覆盖 · " + raw.combo.title,
+            `<div class="qa-form"><p class="qa-note">caseId：${esc(id)}<br>只修改 ${esc(raw.platform.label ?? raw.platform.id)} 的当前组合。公共模板 ${esc(template.title ?? template.id)} 保持不变。仅保留回读的字段不在此修改检查模式。</p><p class="qa-warning">应用后更改当前完整用例文档，尚需导出并由执行器加载。旧计划和历史通过结果不代表新定义。</p>${keys
+              .map((key, index) => {
+                const type = caseDocument.fieldTypes[key],
+                  label =
+                    basePresentation.platforms
+                      .find((p) => p.id === raw.platform.id)
+                      ?.fields.find((f) => f.key === key)?.label ?? key;
+                return `<div class="qa-edit-row"><label>${esc(label)}<small>${esc(key)}</small><input type="checkbox" data-inherit="${index}" ${Object.hasOwn(raw.combo.values, key) ? "" : "checked"} ${Object.hasOwn(template.values, key) ? "" : "disabled"}>继承公共模板</label><div data-edit-index="${index}">${type ? editorControl(key, normalized.values[key], type, index) : "<span>未知字段，需要补适配合同</span>"}</div></div>`;
+              })
+              .join(
+                "",
+              )}<p id="qa-edit-error" class="qa-error" role="status"></p></div>`,
+            `<button class="qa-button" id="qa-apply">应用到当前文档</button><button class="qa-button" id="qa-discard">放弃本次编辑</button>`,
+          );
+          function sync(index) {
+            const inherit = $("qa-body").querySelector(
+              `[data-inherit="${index}"]`,
+            ).checked;
+            const box = $("qa-body").querySelector(
+              `[data-edit-index="${index}"]`,
+            );
+            box.hidden = inherit;
+            const mode = box.querySelector("[data-value-mode]")?.value;
+            if (mode) {
+              box.querySelector("[data-literal-box]").hidden =
+                mode !== "literal";
+              box.querySelector("[data-reference-box]").hidden = ![
+                "material",
+                "scene",
+              ].includes(mode);
+            }
+          }
+          keys.forEach((_, i) => sync(i));
+          $("qa-body").onchange = (e) => {
+            qaDirty = true;
+            const index =
+              e.target.dataset.inherit ?? e.target.dataset.valueMode;
+            if (index !== undefined) sync(Number(index));
+          };
+          $("qa-body").oninput = () => (qaDirty = true);
+          $("qa-apply").onclick = async () => {
+            try {
+              const candidate = structuredClone(caseDocument),
+                target = findRawCombo(id, candidate).combo;
+              for (const [index, key] of keys.entries()) {
+                if (
+                  $("qa-body").querySelector(`[data-inherit="${index}"]`)
+                    .checked
+                ) {
+                  delete target.values[key];
+                  continue;
+                }
+                const type = candidate.fieldTypes[key];
+                if (!type) throw Error(`${key}：未知字段，需要适配`);
+                const box = $("qa-body").querySelector(
+                    `[data-edit-index="${index}"]`,
+                  ),
+                  mode = box.querySelector("[data-value-mode]").value;
+                let value;
+                if (mode === "preserve")
+                  value = structuredClone(normalized.values[key]);
+                else if (mode === "material" || mode === "scene") {
+                  const name = box
+                    .querySelector("[data-reference]")
+                    .value.trim();
+                  value =
+                    mode === "material"
+                      ? { $material: name }
+                      : { $scene: name };
+                } else {
+                  const input = box.querySelector("[data-literal]");
+                  if (type.kind === "boolean") {
+                    if (!["true", "false"].includes(input.value))
+                      throw Error(`${key}：布尔值非法`);
+                    value = input.value === "true";
+                  } else if (type.choices) value = JSON.parse(input.value);
+                  else if (type.kind === "number") {
+                    if (!input.value.trim()) throw Error(`${key}：数字为空`);
+                    value = Number(input.value);
+                  } else if (["array", "object"].includes(type.kind))
+                    value = JSON.parse(input.value);
+                  else value = input.value;
+                }
+                target.values[key] = value;
+              }
+              const checked = compileDocument(candidate),
+                hash = await hashText(documentText(candidate));
+              installDocument(candidate, checked, hash, documentFileName, true);
+              qaClose(true);
+              render();
+              $("qa-edit").focus();
+            } catch (error) {
+              $("qa-edit-error").textContent = error.message;
+            }
+          };
+          $("qa-discard").onclick = () => qaClose(true);
+        }
+
+        function materialReferences() {
+          const refs = new Map();
+          function visit(node, caseId) {
+            if (!node || typeof node !== "object") return;
+            if (typeof node.$material === "string") {
+              if (!refs.has(node.$material))
+                refs.set(node.$material, new Set());
+              refs.get(node.$material).add(caseId);
+              return;
+            }
+            Object.values(node).forEach((value) => visit(value, caseId));
+          }
+          for (const platform of normalizedDocument?.platforms ?? [])
+            for (const combo of platform.combinations) {
+              visit(combo.values, combo.id);
+              for (const v of combo.variants ?? []) visit(v.values, combo.id);
+            }
+          for (const scenario of normalizedDocument?.conditionalScenarios ?? [])
+            visit(scenario.valuesByPlatform, scenario.id);
+          return refs;
+        }
+        function materialAt(ref) {
+          let value = privateManifest?.bindings;
+          for (const key of ref.split(".")) {
+            if (
+              !value ||
+              typeof value !== "object" ||
+              !Object.hasOwn(value, key)
+            )
+              return { found: false };
+            value = value[key];
+          }
+          return { found: true, value };
+        }
+        function validatePrivate(value) {
+          if (
+            !value ||
+            value.schemaVersion !== 1 ||
+            !value.bindings ||
+            typeof value.bindings !== "object" ||
+            Array.isArray(value.bindings)
+          )
+            throw Error("私有清单需要 schemaVersion:1 和 bindings 对象。");
+          for (const key of Object.keys(value))
+            if (
+              ![
+                "schemaVersion",
+                "bindings",
+                "mixedPlatforms",
+                "platformValues",
+                "scenarios",
+              ].includes(key)
+            )
+              throw Error(`私有清单未知字段：${key}`);
+          if (
+            value.mixedPlatforms !== undefined &&
+            (!Array.isArray(value.mixedPlatforms) ||
+              value.mixedPlatforms.some((v) => typeof v !== "string"))
+          )
+            throw Error("mixedPlatforms 必须是字符串数组。");
+          return value;
+        }
+        function materialPanel() {
+          const refs = materialReferences();
+          qaModal(
+            "私有材料清单",
+            `<div class="qa-form"><p class="qa-note">公共用例只保存材料引用。私有 bindings 不进入公共用例导出；本页不回显口令，也不验证文件可访问性、账号或别名密码。</p><label>导入私有材料 JSON<input id="qa-private-file" type="file" accept=".json,application/json"></label><p id="qa-material-error" class="qa-error" role="status"></p><p class="qa-note">清单：${esc(privateManifestName || "未导入")}。相对路径由执行器按材料 JSON 所在目录解析；浏览器不能确认该目录的绝对路径。</p><div id="qa-material-list">${
+              [...refs]
+                .map(([ref, ids]) => {
+                  const binding = materialAt(ref),
+                    candidate = materialCandidates.get(ref);
+                  return `<div class="qa-list-row"><strong>${esc(ref)}</strong><small>引用用例：${[...ids].map(esc).join("、")}</small><small>清单：${binding.found ? "参数已提供，未核验" : "缺少绑定参数"} · 实机核验：未接入</small>${/password|secret|token|alias/i.test(ref) ? "<small>私有值不展示</small>" : binding.found && typeof binding.value === "string" ? `<small>清单相对/指定路径：${esc(binding.value)}（尚未确认可访问）</small>` : ""}<label>本页文件候选<input type="file" data-material-candidate="${esc(ref)}"><small>${candidate ? esc(candidate.name) + "；仅选择，不改写 bindings" : "未选择；选择文件不等于执行器路径绑定"}</small></label></div>`;
+                })
+                .join("") ||
+              '<p class="qa-note">当前正式文档尚无结构化材料引用，或尚未载入。不会从中文说明推断材料。</p>'
+            }</div><details class="qa-details"><summary>场景与材料样本边界</summary><p class="qa-note">{$scene:"primary"} / {$scene:"secondary"}：运行时优先有效初始场景，否则稳定选取实际候选；解析结果尚未取得。</p><p class="qa-note">Android / AGC / Google 使用现成 keystore；本页没有创建密钥库入口。默认签名或自定义签名由真实用例决定。</p><p class="qa-note">淘宝正常构建与边界/显隐检查保持独立，前端只呈现共享定义，不修正或替换执行目标。</p></details></div>`,
+          );
+          $("qa-private-file").onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+              const candidate = validatePrivate(
+                JSON.parse((await file.text()).replace(/^\uFEFF/, "")),
+              );
+              privateManifest = structuredClone(candidate);
+              privateManifestName = file.name;
+              materialPanel();
+            } catch (error) {
+              $("qa-material-error").textContent = error.message;
+            }
+          };
+          $("qa-body").onchange = (e) => {
+            const ref = e.target.dataset.materialCandidate;
+            if (!ref) return;
+            const file = e.target.files[0];
+            if (file)
+              materialCandidates.set(ref, { name: file.name, size: file.size });
+            else materialCandidates.delete(ref);
+          };
+        }
+        function validateOfflinePlan(value) {
+          if (
+            !value ||
+            value.kind !== "pink-build-plan" ||
+            value.schemaVersion !== 1 ||
+            value.phase !== "offline" ||
+            value.runtimeVerified !== false ||
+            value.buildSubmitted !== false ||
+            !Array.isArray(value.cases)
+          )
+            throw Error(
+              "需要 kind:pink-build-plan、schemaVersion:1 的离线计划，且 runtimeVerified/buildSubmitted 为 false。",
+            );
+          if (
+            !value.snapshot ||
+            typeof value.snapshot.sha256 !== "string" ||
+            !/^[a-f\d]{64}$/i.test(value.snapshot.sha256) ||
+            typeof value.snapshot.revision !== "string" ||
+            typeof value.snapshot.casesFile !== "string"
+          )
+            throw Error("离线计划缺少有效的用例文件 SHA256、修订及路径快照。");
+          if (
+            !value.startup ||
+            value.startup.runtimeVerified !== false ||
+            !Array.isArray(value.startup.issues)
+          )
+            throw Error(
+              "离线计划缺少 startup.runtimeVerified:false 及 issues 数组。",
+            );
+          const seenCaseIds = new Set();
+          for (const c of value.cases) {
+            if (
+              !c ||
+              typeof c.caseId !== "string" ||
+              !c.caseId ||
+              typeof c.platform !== "string" ||
+              ![
+                "ready-for-runtime-preflight",
+                "blocked",
+                "not-applicable",
+              ].includes(c.state)
+            )
+              throw Error("离线计划的用例身份或状态无效；原计划保留。");
+            if (seenCaseIds.has(c.caseId))
+              throw Error(`${c.caseId}：离线计划身份重复`);
+            seenCaseIds.add(c.caseId);
+            if (
+              c.values !== undefined &&
+              (!c.values ||
+                typeof c.values !== "object" ||
+                Array.isArray(c.values))
+            )
+              throw Error(`${c.caseId}.values：需要脱敏目标值对象`);
+            if (c.blockers !== undefined && !Array.isArray(c.blockers))
+              throw Error(`${c.caseId}.blockers：需要数组`);
+            if (!["publish", "debug", "mixed", "conditional"].includes(c.group))
+              throw Error(`${c.caseId}.group：未知组合组`);
+            if (c.sceneResolution?.runtimeConfirmed === true)
+              throw Error(`${c.caseId}：离线计划不能声明已确认运行时场景`);
+            for (const key of ["group", "endpoint"])
+              if (c[key] !== undefined && typeof c[key] !== "string")
+                throw Error(`${c.caseId}.${key}：需要字符串`);
+          }
+          return value;
+        }
+        function sanitizedPlanValue(key, value) {
+          if (privateField(key)) return "私有参数（不展示）";
+          if (!value || typeof value !== "object") return String(value ?? "");
+          if (Array.isArray(value))
+            return value.map((v) => sanitizedPlanValue(key, v)).join("、");
+          return Object.entries(value)
+            .map(
+              ([k, v]) =>
+                `${k}: ${privateField(k) ? "私有参数（不展示）" : sanitizedPlanValue(k, v)}`,
+            )
+            .join("；");
+        }
+        function planPanel() {
+          qaModal(
+            "本轮计划与启动配置",
+            `<div class="qa-form"><p class="qa-note">启动配置可以导出交给本地执行入口。页面不启动进程；离线可解析不代表实机已就绪或构建成功。</p><details class="qa-details"><summary>本地启动输入</summary>${[
+              ["pink", "待测 PinK 安装目录 / 可执行文件"],
+              ["project", "工程目录"],
+              ["cases", "用例文件 casesFile"],
+              ["materials", "私有材料清单 materials"],
+            ]
+              .map(
+                ([key, label]) =>
+                  `<label>${label}<input data-run-input="${key}" value="${esc(runInputs[key])}" placeholder="由本地入口核对；相对路径按启动 JSON 所在目录解析"></label>`,
+              )
+              .join(
+                "",
+              )}<p class="qa-note">当前页面文档：${esc(caseDocument?.revision ?? "未载入")} · ${documentDirty ? "有未导出更改" : "尚未获得执行器加载确认"}。手填 casesFile 不等于该文件与当前文档相同。</p></details><details class="qa-details" open><summary>${esc(currentPlatform.name)} · 本轮目录选择</summary>${currentPlatform.combinations.map((c) => `<div class="qa-list-row"><label><input type="checkbox" data-plan-id="${esc(c.id)}" ${planSelection.has(c.id) ? "checked" : ""} ${c.kind === "conditional" ? "disabled" : ""}><span>${esc(c.title)}<small>${esc(c.id)}${c.kind === "conditional" ? " · 目录入口不可直接执行；请导入离线计划选择实际场景" : ""}</small></span></label></div>`).join("")}</details><div id="qa-plan-summary"></div><label>导入执行侧离线计划 JSON<input type="file" id="qa-offline-plan" accept=".json,application/json"></label><p id="qa-plan-error" class="qa-error" role="status"></p><div id="qa-offline-result"></div><div class="qa-stage"><span>执行器加载快照 / 实际版本 / 工程身份</span><span>未取得 / 未识别</span></div><div class="qa-stage"><span>真实执行与新报告</span><span>未启动 / 未产生</span></div></div>`,
+            `<button class="qa-button" id="qa-export-run">导出启动配置 JSON</button><button class="qa-button" disabled>启动本地执行 · 未接入</button>`,
+          );
+          function summary() {
+            $("qa-plan-summary").innerHTML =
+              '<p class="qa-note">已选 ' +
+              planSelection.size +
+              " 个目录入口。条件实例、材料和运行前提以执行侧计划为准。</p>";
+          }
+          function showPlan() {
+            if (!importedPlan) {
+              $("qa-offline-result").innerHTML =
+                '<p class="qa-note">尚未导入离线计划。</p>';
+              return;
+            }
+            const labels = {
+              "ready-for-runtime-preflight": "等待实机预检",
+              blocked: "离线阻塞",
+              "not-applicable": "条件不适用",
+            };
+            $("qa-offline-result").innerHTML =
+              `<p class="qa-warning">离线预览 · 未核验运行时 · 未提交构建。${planGeneration !== documentGeneration ? "页面文档已变化，应重新生成计划。" : importedPlan.snapshot.sha256 === documentHash ? "用例文件 SHA256 与页面文档一致；仍未实机预检。" : "用例文件 SHA256 不同，不代表当前文档的计划。"}</p>` +
+              `<p class="qa-note">用例快照：${esc(importedPlan.snapshot.revision)} / ${esc(importedPlan.snapshot.sha256)}<br>安装包文件版本（离线）：${esc(importedPlan.startup.pink?.version ?? "未提供")}；实际运行实例未确认。<br>工程路径（离线）：${esc(importedPlan.startup.project ?? "未提供")}</p>${importedPlan.startup.issues.map((v) => `<p class="qa-error">${esc(typeof v === "string" ? v : "启动前提未满足")}</p>`).join("")}` +
+              importedPlan.cases
+                .map(
+                  (c) =>
+                    `<details class="qa-details"><summary>${esc(c.caseId)} · ${labels[c.state]}</summary><label><input type="checkbox" data-plan-id="${esc(c.caseId)}" ${planSelection.has(c.caseId) ? "checked" : ""} ${importedPlan.snapshot.sha256 === documentHash ? "" : "disabled"}>选择这个实际实例</label><p class="qa-note">平台：${esc(c.platform)} · 组：${esc(c.group ?? "未提供")} · 终点：${esc(c.endpoint ?? "未提供")}</p>${(c.blockers ?? []).map((v) => `<p class="qa-error">${esc(typeof v === "string" ? v : typeof v?.reason === "string" ? (v.kind ? v.kind + "：" : "") + v.reason : "存在结构化阻塞，见原计划")}</p>`).join("")}<dl>${Object.entries(
+                      c.values ?? {},
+                    )
+                      .map(
+                        ([key, value]) =>
+                          `<dt>${esc(key)}</dt><dd>${esc(sanitizedPlanValue(key, value))}</dd>`,
+                      )
+                      .join(
+                        "",
+                      )}</dl>${c.sceneResolution ? `<p class="qa-note">场景解析（离线候选，非 UI 确认）：primary=${esc(c.sceneResolution.primary?.path ?? "未解析")}；secondary=${esc(c.sceneResolution.secondary?.path ?? "未解析")}。运行时仍优先有效初始场景并核对真实候选。</p>` : ""}</details>`,
+                )
+                .join("");
+          }
+          summary();
+          showPlan();
+          $("qa-body").onchange = (e) => {
+            if (e.target.dataset.planId) {
+              if (e.target.checked) planSelection.add(e.target.dataset.planId);
+              else planSelection.delete(e.target.dataset.planId);
+              $("qa-body")
+                .querySelectorAll("[data-plan-id]")
+                .forEach(
+                  (input) =>
+                    (input.checked = planSelection.has(input.dataset.planId)),
+                );
+              summary();
+            }
+            if (e.target.dataset.runInput)
+              runInputs[e.target.dataset.runInput] = e.target.value;
+          };
+          $("qa-offline-plan").onchange = async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            try {
+              const value = validateOfflinePlan(
+                JSON.parse((await file.text()).replace(/^\uFEFF/, "")),
+              );
+              importedPlan = structuredClone(value);
+              planGeneration = documentGeneration;
+              showPlan();
+              $("qa-plan-error").textContent = "";
+            } catch (error) {
+              $("qa-plan-error").textContent = error.message;
+            }
+          };
+          $("qa-export-run").onclick = () => {
+            try {
+              if (!caseDocument)
+                throw Error("请先载入经共享合同校验的用例文档。");
+              if (documentDirty)
+                throw Error(
+                  "用例有未导出的更改。先导出用例文件，再确认 casesFile 指向该文件。",
+                );
+              for (const key of ["pink", "project", "cases"])
+                if (!runInputs[key].trim())
+                  throw Error("请填写 PinK、工程目录和用例文件路径。");
+              if (!planSelection.size) throw Error("请先选择本轮目录入口。");
+              const selectedGroups = [...planSelection].map((id) => {
+                const combo = model.platforms
+                  .flatMap((p) => p.combinations)
+                  .find((c) => c.id === id);
+                if (combo && combo.kind !== "conditional")
+                  return combo.template;
+                const instance = importedPlan?.cases.find(
+                  (c) => c.caseId === id,
+                );
+                if (!instance || importedPlan.snapshot.sha256 !== documentHash)
+                  throw Error(`${id}：需要与当前用例文件一致的离线计划实例`);
+                return instance.group;
+              });
+              const groups = [...new Set(selectedGroups)].join(",");
+              const config = {
+                schemaVersion: 1,
+                pink: runInputs.pink,
+                project: runInputs.project,
+                casesFile: runInputs.cases,
+                ...(runInputs.materials.trim()
+                  ? { materials: runInputs.materials }
+                  : {}),
+                groups,
+                caseIds: [...planSelection],
+              };
+              const url = URL.createObjectURL(
+                new Blob([JSON.stringify(config, null, 2) + "\n"], {
+                  type: "application/json;charset=utf-8",
+                }),
+              );
+              const a = document.createElement("a");
+              a.href = url;
+              a.download = "pink-build-run.json";
+              a.click();
+              setTimeout(() => URL.revokeObjectURL(url), 1000);
+              $("qa-plan-error").textContent =
+                "已请求下载启动配置。路径和实机状态尚未验证；页面没有启动进程。";
+            } catch (error) {
+              $("qa-plan-error").textContent = error.message;
+            }
+          };
+        }
+        $("qa-files").onclick = filePanel;
+        $("qa-edit").onclick = () => editCase();
+        $("qa-materials").onclick = materialPanel;
+        $("qa-plan").onclick = planPanel;
+        $("qa-close").onclick = () => qaClose();
+        $("qa-dialog").addEventListener("cancel", (e) => {
+          e.preventDefault();
+          qaClose();
+        });
+        $("qa-dialog").addEventListener("close", () => {
+          $("qa-body").oninput = null;
+          $("qa-body").onchange = null;
+        });
+        window.addEventListener("beforeunload", (e) => {
+          if (qaDirty || documentDirty || materialCandidates.size) {
+            e.preventDefault();
+            e.returnValue = "";
+          }
+        });
+
+        // Transient browsing state only. The catalogue and presentation definitions stay read-only.
+        const browsingStates = new Map();
+        let visibleRoute = "";
+        let searchActive = false;
+        let baseExpansion = [];
+        let restoredRoute = false;
+        function pageDetails() {
+          return [...$("page").querySelectorAll("details")];
+        }
+        function rememberBrowse() {
+          if (!visibleRoute) return;
+          browsingStates.set(visibleRoute, {
+            query: $("catalog-search").value,
+            open: searchActive
+              ? baseExpansion
+              : pageDetails().map((el) => el.open),
+            scroll: window.scrollY,
+          });
+        }
+        function stripMarks() {
+          $("page")
+            .querySelectorAll("mark")
+            .forEach((el) =>
+              el.replaceWith(document.createTextNode(el.textContent)),
+            );
+          $("page").normalize();
+        }
+        function highlightText(root, query) {
+          const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+          const nodes = [];
+          while (walker.nextNode()) nodes.push(walker.currentNode);
+          for (const node of nodes) {
+            const text = node.textContent,
+              lower = text.toLowerCase();
+            if (!lower.includes(query)) continue;
+            const fragment = document.createDocumentFragment();
+            let from = 0,
+              at;
+            while ((at = lower.indexOf(query, from)) !== -1) {
+              fragment.append(document.createTextNode(text.slice(from, at)));
+              const mark = document.createElement("mark");
+              mark.textContent = text.slice(at, at + query.length);
+              fragment.append(mark);
+              from = at + query.length;
+            }
+            fragment.append(document.createTextNode(text.slice(from)));
+            node.replaceWith(fragment);
+          }
+        }
+        function searchReference(id) {
+          const c = byId.get(id);
+          return c
+            ? [
+                c.id,
+                c.title,
+                c.target,
+                c.prerequisites,
+                ...(c.steps ?? []).flatMap((step) => [
+                  step.action,
+                  step.expected,
+                ]),
+              ].join(" ")
+            : "";
+        }
+        function prepareBrowse(view) {
+          visibleRoute =
+            view === "public"
+              ? "public"
+              : `${currentPlatform.id}/${currentCombo?.id ?? "overview"}`;
+          const saved = browsingStates.get(visibleRoute);
+          restoredRoute = !!saved;
+          const details = pageDetails();
+          details.forEach((el, i) => (el.open = !!saved?.open[i]));
+          baseExpansion = details.map((el) => el.open);
+          searchActive = false;
+          const entries = [
+            ...$("page").querySelectorAll("[data-search-entry]"),
+          ];
+          entries.forEach((el) => {
+            const card = currentPlatform.combinations.find(
+              (c) => c.id === el.dataset.combo,
+            );
+            const row =
+              currentCombo &&
+              currentPlatform.fields.find((f) => f.key === el.dataset.field);
+            const ids = el.dataset.topicCase
+              ? [el.dataset.topicCase]
+              : card
+                ? [card.id]
+                : row
+                  ? row.refs
+                  : [...el.querySelectorAll("[data-case-id]")].map(
+                      (c) => c.dataset.caseId,
+                    );
+            el.dataset.searchText = [
+              el.textContent,
+              el.dataset.field ?? "",
+              ...ids.map(searchReference),
+            ]
+              .join(" ")
+              .toLowerCase();
+          });
+          const input = $("catalog-search");
+          input.placeholder =
+            view === "public"
+              ? "查找公共界面用例、操作或 ID…"
+              : currentCombo
+                ? "查找本组合字段、专项或 ID…"
+                : "查找本平台组合、专项或 ID…";
+          input.value = saved?.query ?? "";
+          const expandable = details.length > 0;
+          $("expand-all").hidden = !expandable;
+          $("collapse-all").hidden = !expandable;
+          function filter() {
+            const query = input.value.trim().toLowerCase();
+            if (query && !searchActive)
+              baseExpansion = details.map((el) => el.open);
+            searchActive = !!query;
+            stripMarks();
+            let count = 0;
+            for (const el of entries) {
+              el.hidden = !!query && !el.dataset.searchText.includes(query);
+              if (el.hidden) continue;
+              count++;
+              if (!query) continue;
+              if (el.tagName === "DETAILS") el.open = true;
+              for (
+                let parent = el.parentElement;
+                parent && parent !== $("page");
+                parent = parent.parentElement
+              ) {
+                if (parent.tagName === "DETAILS") parent.open = true;
+              }
+              el.querySelectorAll("details").forEach((child) => {
+                if (child.textContent.toLowerCase().includes(query))
+                  child.open = true;
+              });
+              highlightText(el, query);
+            }
+            $("page")
+              .querySelectorAll(".case-group,.config-section")
+              .forEach((group) => {
+                if (group.hasAttribute("data-search-entry")) return;
+                const children = [
+                  ...group.querySelectorAll("[data-search-entry]"),
+                ];
+                group.hidden =
+                  !!query &&
+                  children.length > 0 &&
+                  children.every((child) => child.hidden);
+              });
+            if (!query)
+              details.forEach((el, i) => (el.open = !!baseExpansion[i]));
+            $("clear-search").hidden = !query;
+            $("expand-all").disabled = !!query;
+            $("collapse-all").disabled = !!query;
+            $("search-status").textContent = query
+              ? `匹配 ${count} 个展示入口；仅查找当前页面`
+              : "仅查找当前页面；展开状态和位置在本次浏览中保留";
+            $("no-match").hidden = !query || count > 0;
+          }
+          input.oninput = () => {
+            closeDetail(false);
+            filter();
+          };
+          $("clear-search").onclick = () => {
+            input.value = "";
+            filter();
+            input.focus();
+          };
+          $("expand-all").onclick = () =>
+            details.forEach((el) => (el.open = true));
+          $("collapse-all").onclick = () =>
+            details.forEach((el) => (el.open = false));
+          filter();
+          if (saved)
+            requestAnimationFrame(() => window.scrollTo(0, saved.scroll));
+        }
+
+        function route(params) {
+          location.hash = new URLSearchParams(params).toString();
+        }
+        function render() {
+          closeDetail(false);
+          const params = new URLSearchParams(location.hash.slice(1));
+          const view = params.get("view") === "public" ? "public" : "platform";
+          currentPlatform =
+            model.platforms.find((p) => p.id === params.get("platform")) ??
+            model.platforms.find((p) => p.id === "web-desktop") ??
+            model.platforms[0];
+          currentCombo =
+            view === "platform"
+              ? currentPlatform.combinations.find(
+                  (c) => c.id === params.get("combination"),
+                )
+              : undefined;
+          document.querySelectorAll("[data-route]").forEach((button) => {
+            if (button.dataset.route === view)
+              button.setAttribute("aria-current", "page");
+            else button.removeAttribute("aria-current");
+          });
+          if (view === "public") publicPage();
+          else if (currentCombo) configuration();
+          else overview();
+          prepareBrowse(view);
+        }
+        document.addEventListener("click", (e) => {
+          const el = e.target instanceof Element ? e.target : null;
+          if (!el) return;
+          const suggestion = el.closest("[data-qa-case]");
+          if (suggestion) {
+            editCase(suggestion.dataset.qaCase);
+            return;
+          }
+          const navigation = el.closest("[data-route]");
+          if (navigation) {
+            route({
+              view: navigation.dataset.route,
+              platform: currentPlatform.id,
+            });
+            return;
+          }
+          const card = el.closest("[data-combo]");
+          if (card) {
+            route({
+              platform: currentPlatform.id,
+              combination: card.dataset.combo,
+            });
+            return;
+          }
+          if (el.closest("[data-back]")) {
+            route({ platform: currentPlatform.id });
+            return;
+          }
+          const row = el.closest("[data-field]");
+          if (row) openField(row.dataset.field, row);
+        });
+        document.addEventListener("change", (e) => {
+          if (e.target.id === "platform-select")
+            route({ platform: e.target.value });
+        });
+        document.addEventListener("keydown", (e) => {
+          if ($("drawer").hidden) {
+            if (
+              e.key === "Escape" &&
+              e.target === $("catalog-search") &&
+              e.target.value
+            ) {
+              e.preventDefault();
+              $("clear-search").click();
+            }
+            return;
+          }
+          if (e.key === "Escape") {
+            e.preventDefault();
+            closeDetail();
+            return;
+          }
+          if (e.key === "Tab" && narrow.matches) {
+            const focusable = [
+              ...$("drawer").querySelectorAll("button,a[href],summary"),
+            ].filter((el) => el.getClientRects().length);
+            const first = focusable[0],
+              last = focusable.at(-1);
+            if (e.shiftKey && document.activeElement === first) {
+              e.preventDefault();
+              last.focus();
+            } else if (!e.shiftKey && document.activeElement === last) {
+              e.preventDefault();
+              first.focus();
+            }
+          }
+        });
+        $("close-detail").addEventListener("click", () => closeDetail());
+        narrow.addEventListener("change", setDrawerMode);
+        window.addEventListener("hashchange", () => {
+          const previousCombo = currentCombo?.id;
+          rememberBrowse();
+          render();
+          if (restoredRoute) {
+            const restoredFocus = currentCombo
+              ? $("combo-title")
+              : ([...document.querySelectorAll("[data-combo]")].find(
+                  (el) => el.dataset.combo === previousCombo,
+                ) ??
+                $("platform-select") ??
+                document.querySelector("[data-route][aria-current]"));
+            restoredFocus?.focus({ preventScroll: true });
+            return;
+          }
+          if (currentCombo) {
+            window.scrollTo(0, 0);
+            $("combo-title").focus({ preventScroll: true });
+          } else {
+            const previousCard = [
+              ...document.querySelectorAll("[data-combo]"),
+            ].find((el) => el.dataset.combo === previousCombo);
+            (
+              previousCard ??
+              $("platform-select") ??
+              document.querySelector("[data-route][aria-current]")
+            ).focus({ preventScroll: true });
+            if (previousCard) previousCard.scrollIntoView({ block: "nearest" });
+            else window.scrollTo(0, 0);
+          }
+        });
+        initialiseDocument();
+        render();
+      })();
+    </script>
+  </body>
+</html>

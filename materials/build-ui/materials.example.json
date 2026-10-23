@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "bindings": {
+    "androidSigning": {
+      "path": "./android.keystore",
+      "alias": "<测试库中的别名>",
+      "password": "<测试库口令>",
+      "aliasPassword": "<别名口令>"
+    },
+    "agcServices": {
+      "path": "./agconnect-services.json"
+    },
+    "android": {
+      "publish": { "apiLevel": 35 }
+    },
+    "huawei_agc": {
+      "publish": { "apiLevel": 36 }
+    },
+    "google_play": {
+      "publish": { "apiLevel": 35 }
+    }
+  },
+  "mixedPlatforms": []
+}

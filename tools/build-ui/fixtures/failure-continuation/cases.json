@@ -1,0 +1,110 @@
+{
+  "revision": "developer-failure-continuation-v1",
+  "conditionalScenarios": [],
+  "fieldTypes": {
+    "name": {
+      "kind": "string"
+    },
+    "buildPath": {
+      "kind": "string"
+    },
+    "outputName": {
+      "kind": "string"
+    },
+    "startScene": {
+      "kind": "string"
+    },
+    "scenes": {
+      "kind": "array"
+    },
+    "debug": {
+      "kind": "boolean"
+    },
+    "sourceMaps": {
+      "kind": "string",
+      "choices": ["false", "true", "inline"]
+    }
+  },
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "values": {},
+      "title": "publish",
+      "id": "publish"
+    },
+    {
+      "values": {},
+      "title": "debug",
+      "id": "debug"
+    },
+    {
+      "values": {},
+      "title": "mixed",
+      "id": "mixed"
+    },
+    {
+      "values": {},
+      "title": "conditional",
+      "id": "conditional"
+    }
+  ],
+  "platforms": [
+    {
+      "combinations": [
+        {
+          "title": "可控目录冲突：预期真实构建失败",
+          "id": "developer.failure.web-desktop",
+          "values": {
+            "sourceMaps": "false",
+            "startScene": {
+              "$scene": "primary"
+            },
+            "buildPath": "project://selfcheck-output-blocker/build",
+            "debug": true,
+            "outputName": "qa_selfcheck_failure",
+            "scenes": [
+              {
+                "$scene": "primary"
+              }
+            ],
+            "name": "qa_selfcheck_failure"
+          },
+          "variants": [
+            {
+              "title": "失败后继续：正常构建",
+              "values": {
+                "outputName": "qa_selfcheck_recovery",
+                "name": "qa_selfcheck_recovery",
+                "buildPath": "project://build"
+              }
+            }
+          ],
+          "template": "publish"
+        },
+        {
+          "values": {},
+          "title": "debug",
+          "template": "debug",
+          "id": "developer.debug.web-desktop",
+          "variants": []
+        },
+        {
+          "values": {},
+          "title": "mixed",
+          "template": "mixed",
+          "id": "developer.mixed.web-desktop",
+          "variants": []
+        },
+        {
+          "values": {},
+          "title": "conditional",
+          "template": "conditional",
+          "id": "developer.conditional.web-desktop",
+          "variants": []
+        }
+      ],
+      "label": "Web 桌面端",
+      "id": "web-desktop"
+    }
+  ]
+}

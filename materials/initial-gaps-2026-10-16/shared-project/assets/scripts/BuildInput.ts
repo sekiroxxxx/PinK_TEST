@@ -1,0 +1,1 @@
+export const BUILD_INPUT_MARKER: string = 'BUILD_INPUT_HEALTHY';

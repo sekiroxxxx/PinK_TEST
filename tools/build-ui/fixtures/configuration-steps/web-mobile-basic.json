@@ -1,0 +1,32 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "caseId": "steps.web-mobile.basic",
+      "platform": "web-mobile",
+      "steps": [
+        { "id": "original", "op": "record", "fields": ["name", "packages.web-mobile.orientation"] },
+        { "id": "rename", "op": "set", "field": "name", "value": "qa_mobile_steps_basic" },
+        {
+          "id": "orientation",
+          "op": "set",
+          "field": "packages.web-mobile.orientation",
+          "value": "landscape"
+        },
+        { "id": "current", "op": "read", "fields": ["name", "packages.web-mobile.orientation"] },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "qa_mobile_steps_basic",
+            "packages.web-mobile.orientation": "landscape"
+          }
+        },
+        { "id": "restore", "op": "restore", "record": "original" }
+      ]
+    }
+  ]
+}

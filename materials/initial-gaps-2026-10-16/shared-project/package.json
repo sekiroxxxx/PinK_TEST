@@ -1,0 +1,13 @@
+{
+  "type": "2d",
+  "version": "1.0.0",
+  "creator": {
+    "version": "3.8.8"
+  },
+  "name": "pink-initial-gap-materials",
+  "uuid": "80741f63-8857-4963-a983-80ed2363e6ba",
+  "pink": {
+    "uuid": "56df70a5-e6b9-462f-8918-f30201a1a488",
+    "version": "1.127.0"
+  }
+}

@@ -1,0 +1,115 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 2,
+  "cases": [
+    {
+      "caseId": "steps.v2.mobile.edited",
+      "platform": "web-mobile",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "original",
+          "op": "record",
+          "page": "page",
+          "fields": [
+            "name",
+            "packages.web-mobile.orientation",
+            "packages.web-mobile.embedWebDebugger"
+          ]
+        },
+        {
+          "id": "closeFirst",
+          "op": "config.close",
+          "page": "page"
+        },
+        {
+          "id": "reopened",
+          "op": "config.open"
+        },
+        {
+          "id": "debugger",
+          "op": "set",
+          "page": "reopened",
+          "field": "packages.web-mobile.embedWebDebugger",
+          "value": true
+        },
+        {
+          "id": "orientation",
+          "op": "set",
+          "page": "reopened",
+          "field": "packages.web-mobile.orientation",
+          "value": "portrait"
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "page": "reopened",
+          "field": "name",
+          "value": "qa_v2_edited"
+        },
+        {
+          "id": "final",
+          "op": "read",
+          "page": "reopened",
+          "scope": "build",
+          "fields": [
+            "name",
+            "packages.web-mobile.orientation",
+            "packages.web-mobile.embedWebDebugger"
+          ]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "final",
+          "values": {
+            "name": "qa_v2_edited",
+            "packages.web-mobile.orientation": "portrait"
+          }
+        },
+        {
+          "id": "submitted",
+          "op": "build.submit",
+          "page": "reopened",
+          "snapshot": "final"
+        },
+        {
+          "id": "finished",
+          "op": "build.wait",
+          "task": "submitted"
+        },
+        {
+          "id": "success",
+          "op": "assert",
+          "check": "build-result",
+          "task": "submitted",
+          "result": "finished",
+          "expected": {
+            "state": "success"
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanupPage",
+          "op": "config.open"
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "page": "cleanupPage",
+          "record": "original"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanupPage"
+        }
+      ]
+    }
+  ]
+}

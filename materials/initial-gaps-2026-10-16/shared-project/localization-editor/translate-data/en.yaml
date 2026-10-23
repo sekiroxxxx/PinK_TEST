@@ -1,0 +1,23 @@
+{
+  "locale": "en",
+  "items": [
+    [
+      "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+      {
+        "key": "48c19f3a-60a9-4aab-8a41-31fa053b1f01",
+        "value": "EN_COMPLETE_Control",
+        "type": 2,
+        "isVariant": false,
+        "associations": [],
+        "_variants": []
+      }
+    ]
+  ],
+  "languageConfig": {
+    "bcp47Tag": "en",
+    "translateFinished": 1,
+    "translateTotal": 2,
+    "compileFinished": 0,
+    "compileTotal": 0
+  }
+}

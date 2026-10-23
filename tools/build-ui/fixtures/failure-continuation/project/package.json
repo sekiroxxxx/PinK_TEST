@@ -1,0 +1,12 @@
+{
+  "name": "pink-build-developer-selfcheck",
+  "type": "3d",
+  "version": "1.0.0",
+  "creator": {
+    "version": "4.0.0"
+  },
+  "pink": {
+    "uuid": "ce183a71-c08d-40cf-bdc6-e41f59893d20",
+    "version": "1.127.0"
+  }
+}

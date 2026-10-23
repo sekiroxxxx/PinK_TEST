@@ -1,0 +1,20 @@
+node_modules/
+dist/
+/results/
+/materials/build-ui/local/
+
+# Machine-local credentials and signing material
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+agconnect-services.json
+
+# Local system and tool output
+.DS_Store
+Thumbs.db
+npm-debug.log*

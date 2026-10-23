@@ -1,0 +1,207 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 1,
+  "cases": [
+    {
+      "caseId": "steps.web-desktop.edited-runtime",
+      "platform": "web-desktop",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": ["name", "inlineEnum"]
+        },
+        {
+          "id": "inline-enum",
+          "op": "set",
+          "field": "inlineEnum",
+          "value": false
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "field": "name",
+          "value": "qa_steps_edited_runtime"
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": ["name", "inlineEnum"]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "qa_steps_edited_runtime",
+            "inlineEnum": false
+          }
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ]
+    },
+    {
+      "caseId": "steps.web-desktop.failure-continue",
+      "platform": "web-desktop",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": ["name"]
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "field": "name",
+          "value": "qa_steps_continue"
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": ["name"]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "intentionally_different_expected_value"
+          }
+        },
+        {
+          "id": "must-skip-input",
+          "op": "set",
+          "field": "name",
+          "value": "must_never_be_written"
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ],
+      "onFailure": "continue"
+    },
+    {
+      "caseId": "steps.web-desktop.after-failure",
+      "platform": "web-desktop",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": ["name"]
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "field": "name",
+          "value": "qa_steps_after_failure"
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": ["name"]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "qa_steps_after_failure"
+          }
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ]
+    },
+    {
+      "caseId": "steps.web-desktop.failure-stop",
+      "platform": "web-desktop",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": ["name"]
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "field": "name",
+          "value": "qa_steps_stop"
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": ["name"]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "intentionally_different_expected_value"
+          }
+        },
+        {
+          "id": "must-skip-input",
+          "op": "set",
+          "field": "name",
+          "value": "must_never_be_written"
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ],
+      "onFailure": "stop"
+    },
+    {
+      "caseId": "steps.web-desktop.must-not-run",
+      "platform": "web-desktop",
+      "steps": [
+        {
+          "id": "original",
+          "op": "record",
+          "fields": ["name"]
+        },
+        {
+          "id": "rename",
+          "op": "set",
+          "field": "name",
+          "value": "must_never_be_written"
+        },
+        {
+          "id": "current",
+          "op": "read",
+          "fields": ["name"]
+        },
+        {
+          "id": "check",
+          "op": "assert",
+          "check": "values",
+          "snapshot": "current",
+          "values": {
+            "name": "must_never_be_written"
+          }
+        },
+        {
+          "id": "restore",
+          "op": "restore",
+          "record": "original"
+        }
+      ]
+    }
+  ]
+}
