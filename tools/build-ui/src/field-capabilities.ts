@@ -1,5 +1,6 @@
 import { caseContract, type CatalogDocument, type InputValues } from "./case-contract.js";
 import { supportedFieldTypes } from "./supported-field-types.js";
+import { describeStepCapabilities } from "./step-operation-capabilities.js";
 
 export { supportedFieldTypes } from "./supported-field-types.js";
 
@@ -11,6 +12,7 @@ export function describeFieldCapabilities() {
     capabilityVersion: "1",
     supportedCaseSchemaVersions: [1],
     runtimeVerified: false,
+    steps: describeStepCapabilities(),
     supportedFields: Object.entries(supportedFieldTypes).map(([key, type]) => {
       const scene = key === "startScene" || key === "scenes";
       const platform = key.startsWith("packages.") ? key.split(".")[1] : undefined;

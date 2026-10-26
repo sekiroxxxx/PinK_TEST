@@ -1,6 +1,7 @@
 import { createStepBuildPort } from "./build-steps-runtime.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
 import { readFile, realpath, stat, mkdir, writeFile, readdir } from "node:fs/promises";
+import { ExecutionStop, checkExecutionStop } from "./execution-stop.js";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -19,7 +20,10 @@ import { startSession, findWindow, engineSelection } from "./session.js";
 import { assertWindowIdentity } from "./workspace-identity.js";
 import { waitFor, type Options } from "./common.js";
 import { readForm, type FormView } from "./configuration-page.js";
-import { writeResultReport } from "./result-report.js";
+import { createResultCheckpoint, type CheckpointWriteError } from "./result-checkpoint.js";
+import { platformCatalog, platformEntry } from "./platform-catalog.js";
+import { catalogStepResults } from "./catalog-steps-loader.js";
+import { configurationErrorDetail } from "./configuration-diagnostics.js";
 
 export async function configurationStepsLaunchPlan(
   loaded: LoadedConfigurationSteps,
@@ -32,18 +36,22 @@ export async function configurationStepsLaunchPlan(
   },
 ) {
   const steps = configurationStepsPlan(loaded);
-  if (new Set(loaded.document.cases.map((c) => c.platform)).size !== 1)
-    throw new Error("本批步骤启动一次仅操作一个平台，切换平台请使用另一份步骤文件");
+  if (
+    loaded.document.schemaVersion === 1 &&
+    new Set(loaded.document.cases.map((c) => c.platform)).size !== 1
+  )
+    throw new Error("v1 步骤启动一次仅操作一个平台；跨平台调度请使用 v2");
   if (
     loaded.document.cases.some(
       (c) =>
         !["web-desktop", "web-mobile"].includes(c.platform) &&
+        !(
+          loaded.document.schemaVersion === 2 && platformCatalog.some((p) => p.id === c.platform)
+        ) &&
         !loaded.document.targets?.some((target) => target.id === c.platform),
     )
   )
-    throw new Error(
-      "步骤启动需要 web-desktop、web-mobile 或文件中声明的新标准平台；其他平台保留原入口",
-    );
+    throw new Error("步骤启动需要已适配平台或文件中声明的新标准平台");
   if (
     !Number.isInteger(input.port) ||
     input.port < 1024 ||
@@ -59,6 +67,8 @@ export async function configurationStepsLaunchPlan(
     throw new Error("工程缺少有效 package.json");
   const productBytes = await readFile(join(dirname(pink), "resources/app/product.json"));
   const product = JSON.parse(productBytes.toString("utf8"));
+  if (loaded.inputs?.preview.project && loaded.inputs.preview.project !== project)
+    throw new Error("步骤场景与启动工程不一致，请重新加载步骤文件");
   if (!(await stat(project)).isDirectory()) throw new Error("工程路径不是目录");
   return sealPlan({
     kind: "pink-configuration-steps-launch-plan",
@@ -125,6 +135,7 @@ function formValues(view: FormView) {
 export async function runConfigurationStepsFromStartup(
   loaded: LoadedConfigurationSteps,
   plan: LaunchPlan,
+  stopControl?: ExecutionStop,
 ) {
   const v2 = loaded.document.schemaVersion === 2;
   let buildRuntime: Awaited<ReturnType<typeof createStepBuildPort>> | undefined;
@@ -144,12 +155,12 @@ export async function runConfigurationStepsFromStartup(
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "plan.json"), JSON.stringify(plan, null, 2));
   const abort = new AbortController();
-  const stop = () => abort.abort(new Error("用户中止配置步骤"));
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  const stop = stopControl ?? new ExecutionStop().listen();
+  const startupSignal = AbortSignal.any([abort.signal, stop.signal]);
   let browser: Browser | undefined,
     builder: Builder | undefined,
     session: ExecutionContext | undefined;
+  const builders = new Map<string, Builder>();
   let baseline: ReturnType<typeof formValues> | undefined;
   const warnings: string[] = [];
   const protectedFiles = {
@@ -185,28 +196,64 @@ export async function runConfigurationStepsFromStartup(
     configuredEngine: await engineSelection(options.project),
     evidenceKind: "runtime",
     buildSubmitted: false,
+    buildAttempted: false,
+    ...(loaded.catalog ? { catalog: loaded.catalog } : {}),
     startedAt: new Date().toISOString(),
-    outcome: "failed",
+    outcome: "incomplete",
+    lifecycle: "running",
+    processes: { workerPid: process.pid, supervisorPid: process.ppid },
     warnings,
-    cases: loaded.document.cases.map((c) => ({
-      caseId: c.caseId,
-      platform: c.platform,
-      outcome: "not-run",
-    })),
+    cases: loaded.catalog
+      ? catalogStepResults(loaded, [])
+      : loaded.document.cases.map((c) => ({
+          caseId: c.caseId,
+          platform: c.platform,
+          outcome: "not-run",
+        })),
   };
+  const checkpointWarning = (error: CheckpointWriteError) => {
+    if (!warnings.includes("运行检查点写出失败")) warnings.push("运行检查点写出失败");
+    const errors = (data.checkpointErrors ??= []) as unknown[];
+    errors.push({
+      ...configurationErrorDetail(error),
+      phase: error.phase,
+      systemCode: error.systemCode,
+    });
+  };
+  const checkpoint = createResultCheckpoint(join(directory, "result.json"), checkpointWarning);
+  const publish = (render = false) => checkpoint.publish(data, render);
+  const unsubscribe = stop.subscribe(() => {
+    data.interruption = stop.requestInfo;
+    data.lifecycle = "stopping";
+    void publish(true).catch(() => {}); // The publisher records the error before draining.
+  });
   try {
-    const connection = await startSession(options, abort.signal, (info) => {
+    await publish(true);
+    console.log(`运行结果：${join(directory, "result.json")}`);
+    checkExecutionStop(stop.signal);
+    await loaded.verifySource?.();
+    await loaded.inputs?.verify();
+    if (!loaded.document.cases.length) {
+      data.evidenceKind = "offline-preflight";
+      throw new ConfigurationOperationError(
+        "precondition",
+        "所选用例均受阻或不适用，未启动或连接 PinK",
+        "blocked",
+      );
+    }
+    const connection = await startSession(options, startupSignal, (info) => {
       data.launch = info;
     });
     browser = connection.browser;
-    const page = await findWindow(browser, options.project, abort.signal, options.pink);
+    const page = await findWindow(browser, options.project, startupSignal, options.pink);
     const identity = await assertWindowIdentity(page, options.project, options.pink);
     data.runtimeIdentity = identity;
     session = new ExecutionContext(identity, () =>
       assertWindowIdentity(page, options.project, options.pink),
     );
-    const target = loaded.document.targets?.find((p) => p.id === loaded.document.cases[0].platform);
-    const category = target?.category ?? "X-Device";
+    const descriptor = (platform: string) =>
+      loaded.document.targets?.find((p) => p.id === platform) ?? platformEntry(platform);
+    const category = descriptor(loaded.document.cases[0].platform).category;
     await waitFor(
       "工程构建分类就绪",
       async () =>
@@ -214,29 +261,71 @@ export async function runConfigurationStepsFromStartup(
           ? true
           : undefined,
       180_000,
-      abort.signal,
+      startupSignal,
     );
-    builder = await Builder.open(
-      page,
-      connection.endpoint,
-      abort.signal,
-      category,
-      options.configurationTimeoutMs,
-    );
-    if (v2 && loaded.document.cases.some((c) => c.steps.some((s) => s.op === "build.submit"))) {
+    const activate = async (category: string) => {
+      await session!.verify();
+      const tab = page.getByRole("tab", { name: category, exact: true });
+      if ((await tab.getAttribute("aria-expanded")) !== "true")
+        await tab.click({ timeout: 60_000 });
+      await waitFor(
+        `切换 ${category} 构建分类`,
+        async () => ((await tab.getAttribute("aria-expanded")) === "true" ? true : undefined),
+        30_000,
+        abort.signal,
+      );
+      builder = builders.get(category)!;
+    };
+    for (const category of new Set(
+      loaded.document.cases.map((c) => descriptor(c.platform).category),
+    )) {
+      checkExecutionStop(stop.signal);
+      builder = await Builder.open(
+        page,
+        connection.endpoint,
+        abort.signal,
+        category,
+        options.configurationTimeoutMs,
+        v2,
+      );
+      builders.set(category, builder);
+    }
+    if (
+      v2 &&
+      loaded.document.cases.some((c) =>
+        c.steps.some((s) => s.op === "build.submit" || s.op.startsWith("stage.")),
+      )
+    ) {
       const keys = loaded.document.cases.flatMap((c) =>
-        c.steps.flatMap((s) => (s.op === "read" ? s.fields : [])),
+        c.steps.flatMap((s) => ("fields" in s ? s.fields : "field" in s ? [s.field] : [])),
       );
       buildRuntime = await createStepBuildPort(
-        builder,
+        [...builders].map(([category, builder]) => ({
+          builder,
+          platforms: [
+            ...new Set(
+              loaded.document.cases
+                .filter((c) => descriptor(c.platform).category === category)
+                .map((c) => c.platform),
+            ),
+          ],
+          activate: () => activate(category),
+        })),
         session,
         options.project,
         keys,
         abort.signal,
       );
-    }
+    } else if (v2 && loaded.document.cases.some((c) => c.platform === "openpaas"))
+      await builders.get(descriptor("openpaas").category)!.installProbe([], true);
     const result = await runConfigurationSteps(loaded, {
+      stopSignal: stop.signal,
+      onProgress: async (progress) => {
+        Object.assign(data, progress, { cases: catalogStepResults(loaded, progress.cases) });
+        await publish().catch(() => {}); // Keep recovery running; the publisher retains diagnostics.
+      },
       session,
+      verifySource: loaded.verifySource,
       evidenceKind: "runtime",
       build: buildRuntime?.port,
       closeConfiguration: async (operations) => {
@@ -280,6 +369,8 @@ export async function runConfigurationStepsFromStartup(
             "已有未归属配置页，拒绝隐式关闭或接管",
             "stop",
           );
+        await activate(descriptor(platform).category);
+        const target = loaded.document.targets?.find((p) => p.id === platform);
         const form = await BuilderConfiguration.open(
           builder!,
           session!,
@@ -298,6 +389,15 @@ export async function runConfigurationStepsFromStartup(
       },
     });
     Object.assign(data, result);
+    if (loaded.catalog) {
+      data.catalog = loaded.catalog;
+      data.cases = catalogStepResults(loaded, result.cases);
+      data.outcome = (data.cases as ConfigurationStepCaseResult[]).every(
+        (c) => c.outcome === "passed" || c.outcome === "not-applicable",
+      )
+        ? "passed"
+        : "failed";
+    }
     const cases = result.cases;
     const safe = cases.every((c) =>
       ["passed", "not-required", "not-recorded"].includes(c.restoration),
@@ -311,7 +411,7 @@ export async function runConfigurationStepsFromStartup(
     }
     if (!v2 && safe && baseline) {
       await session.verify();
-      const after = formValues(await builder.configurationPage());
+      const after = formValues(await builder!.configurationPage());
       data.configurationAfter = after;
       data.configurationRestored = valueHash(baseline) === valueHash(after);
       if (!data.configurationRestored) throw new Error("最终配置与原配置不一致，保留现场");
@@ -324,33 +424,69 @@ export async function runConfigurationStepsFromStartup(
         c.screenshotOmittedReason = "配置步骤未截图断言瞬间；最终恢复现场为同目录 restored.png";
       // A policy stop after successful recovery is safe to close; hard failures retain the page.
       if (!result.stopped || cases.some((c) => c.stopReason?.code === "case-policy"))
-        await builder.closeConfiguration(() => session!.verify());
+        await builder!.closeConfiguration(() => session!.verify());
     }
   } catch (error) {
     data.fatal = error instanceof Error ? error.message : "步骤启动或收尾失败";
     data.outcome = "failed";
   } finally {
-    await buildRuntime?.stop().catch(() => warnings.push("任务观察器停止失败"));
+    const cleanup: Array<{
+      resource: string;
+      outcome: "passed" | "failed";
+      reason?: string;
+      diagnostic?: ReturnType<typeof configurationErrorDetail>;
+    }> = [];
+    data.cleanup = cleanup;
+    const release = async (resource: string, action: () => Promise<void>) => {
+      try {
+        await action();
+        cleanup.push({ resource, outcome: "passed" });
+      } catch (error) {
+        const diagnostic = configurationErrorDetail(error);
+        cleanup.push({
+          resource,
+          outcome: "failed",
+          reason: diagnostic.chain[0]?.message ?? "资源释放失败，不能计收尾通过",
+          diagnostic,
+        });
+        warnings.push(`${resource}释放失败`);
+        data.outcome = "failed";
+      }
+    };
+    if (buildRuntime) await release("task-observer", () => buildRuntime!.stop());
     session?.invalidate();
-    await builder?.close().catch(() => warnings.push("Builder 连接释放失败"));
-    await browser?.close().catch(() => warnings.push("浏览器调试连接释放失败"));
-    process.removeListener("SIGINT", stop);
-    process.removeListener("SIGTERM", stop);
-    const after = await hashes();
-    data.protectedFiles = { before, after, unchanged: valueHash(before) === valueHash(after) };
+    for (const [category, observer] of builders)
+      await release(`builder-probe:${category}`, () => observer.close());
+    if (browser) await release("browser-connection", () => browser!.close());
+    unsubscribe();
+    await checkpoint.drain();
+    if (!stopControl) stop.dispose();
+    const after = await hashes().catch(() => undefined);
+    data.protectedFiles = {
+      before,
+      after,
+      unchanged: !!after && valueHash(before) === valueHash(after),
+    };
     const engineUnchanged =
+      !!after &&
       before.globalSettings === after.globalSettings &&
       before.projectSettings === after.projectSettings;
     data.engineSettingsUnchanged = engineUnchanged;
     const tasksExpectedToChange = v2 && data.buildAttempted === true;
-    if (!engineUnchanged || (!tasksExpectedToChange && before.tasks !== after.tasks)) {
+    if (!engineUnchanged || (!tasksExpectedToChange && before.tasks !== after?.tasks)) {
       data.outcome = "failed";
       warnings.push("任务文件存在非预期变化或引擎设置改变，需要核查");
     }
+    if (stop.requestInfo) {
+      data.interruption = stop.requestInfo;
+      data.outcome = "failed";
+      data.stopped = true;
+    }
+    data.lifecycle = "finished";
     data.finishedAt = new Date().toISOString();
-    await writeFile(join(directory, "result.json"), JSON.stringify(data, null, 2));
+    await publish(true);
     console.log(`结果：${join(directory, "result.json")}`);
-    console.log(`报告：${await writeResultReport(join(directory, "result.json"))}`);
+    console.log(`报告：${join(directory, "report.html")}`);
   }
   return { directory, outcome: data.outcome };
 }

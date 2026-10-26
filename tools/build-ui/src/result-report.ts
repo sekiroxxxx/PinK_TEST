@@ -210,6 +210,34 @@ export async function writeResultReport(resultPath: string): Promise<string> {
   const fatal = text(data.fatal) || text(data.failure);
   const warnings = Array.isArray(data.warnings) ? data.warnings : record(data.cleanup).warnings;
   const notices = [fatal, ...(Array.isArray(warnings) ? warnings.map(text) : [])].filter(Boolean);
+  for (const failure of list(data.checkpointErrors)) {
+    const reason = list(failure.chain)
+      .map((item) => text(item.message))
+      .filter(Boolean)
+      .join(" → ");
+    if (reason) notices.push(`检查点写出失败：${reason}`);
+  }
+  for (const failure of list(data.cleanup).filter((item) => item.outcome === "failed"))
+    notices.push(`${text(failure.resource)}释放失败：${text(failure.reason)}`);
+  if (data.lifecycle && data.lifecycle !== "finished")
+    notices.push(
+      data.lifecycle === "stopping"
+        ? "已收到停止请求，正在收集任务和安全恢复；报告尚未收尾。"
+        : "执行尚未结束；本报告为检查点，不能计为通过。",
+    );
+  if (data.interruption)
+    notices.push(
+      `停止请求：${text(record(data.interruption).source)} ${text(record(data.interruption).requestedAt)}；已停止后续操作，收尾情况见步骤与恢复记录。`,
+    );
+  const lifecycle =
+    data.lifecycle === "finished"
+      ? "已收尾"
+      : data.lifecycle === "stopping"
+        ? "停止并收尾中"
+        : "执行中";
+  const cleanupSummary = list(data.cleanup)
+    .map((r) => `${text(r.resource)}：${r.outcome === "passed" ? "已释放" : "释放失败"}`)
+    .join("；");
   if (data.taskMayStillBeRunning === true || record(data.cleanup).taskMayStillBeRunning === true)
     notices.push("已尝试提交，但任务关联或收尾尚未确认，可能仍在运行；工具未自动取消。");
   const reportPath = resolve(
@@ -226,6 +254,7 @@ export async function writeResultReport(resultPath: string): Promise<string> {
 </style></head><body><main><h1>${reportTitle}</h1>
 <p class="meta">${html(text(data.runId) || (data.kind === "four-groups-base-acceptance-summary" ? "多次执行汇总（依据现有汇总 JSON）" : basename(directory)))} · ${html(labels[text(data.outcome)] ?? text(data.outcome))}</p>
 <p class="meta">${html(text(data.project))}</p><p class="meta">${html(text(record(data.pink).version))} · 生成于 ${html(new Date().toISOString())} · <a href="${encodeURIComponent(basename(file))}">结果 JSON</a></p>
+${data.lifecycle ? `<p class="meta">${html(lifecycle)}${cleanupSummary ? ` · ${html(cleanupSummary)}` : ""}</p>` : ""}
 <p class="summary">${html(summary)}</p>
 ${notices.length ? `<section class="notice"><h2>运行级错误或清理提示</h2><pre tabindex="0">${html(notices.join("\n"))}</pre></section>` : ""}
 ${issues.length ? issues.join("\n") : `<p>${notices.length ? "没有用例级失败或受阻记录，请先处理上述运行级问题。" : entries.length ? "本次没有失败、受阻或未完成用例。" : "本次没有用例记录，不能据此判定通过。"}</p>`}

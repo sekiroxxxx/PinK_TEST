@@ -64,11 +64,19 @@ function versionErrors(view: FormView) {
 /** Ordinary build preparation reuses the selected existing game; no persistence/negative checks. */
 export async function prepareOpenpaasBuild(builder: Builder, initialView?: FormView) {
   const view = initialView ?? (await builder.openConfigurationPage(platformLabel));
+  return assertOpenpaasBuildReady(view, await builder.openpaasPage());
+}
+
+export function assertOpenpaasBuildReady(view: FormView, games: OpenpaasPageState) {
   assert.equal(view.title, "openpaas小游戏", "OpenPaaS配置页身份不一致");
   const versionName = version(view);
   assert.ok(versionName.trim(), "OpenPaaS游戏版本名必填");
-  const games = await builder.openpaasPage();
   assert.ok(games.ids.includes(games.id), "请先在配置页选定已有游戏；工具不新建游戏或替换已选游戏");
+  assert.equal(
+    games.codeVersion,
+    games.games.find((game) => game.id === games.id)?.codeVersion,
+    "已有游戏代码版本联动尚未匹配",
+  );
   return {
     gameId: fieldFingerprint(games.id),
     versionName,
@@ -78,6 +86,27 @@ export async function prepareOpenpaasBuild(builder: Builder, initialView?: FormV
     automaticStages:
       "product-managed; retain task options when exposed; no SDK changes or separate clicks",
   };
+}
+
+export interface OpenpaasPageState {
+  id: string;
+  ids: string[];
+  codeVersion: string;
+  games: OpenpaasGame[];
+  createLabel?: string;
+}
+
+export function assertExistingGameSelectable(
+  page: Pick<OpenpaasPageState, "ids" | "createLabel">,
+  id: string,
+): void {
+  if (
+    !/^\d+$/.test(id) ||
+    !page.ids.includes(id) ||
+    page.ids.filter((value) => value.startsWith(id)).length !== 1 ||
+    page.createLabel?.startsWith(id[0])
+  )
+    throw new Error("游戏ID须唯一匹配当前账号的已有候选；禁止选择创建游戏入口");
 }
 
 /** This scope never calls a build, stage or game-creation operation. */

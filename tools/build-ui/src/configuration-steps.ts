@@ -2,6 +2,7 @@ import { runBuildSteps, type BuildStepsPort } from "./build-steps.js";
 import type { BuildStep } from "./build-steps-contract.js";
 import type { ExecutionContext } from "./configuration-context.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
+import { checkExecutionStop } from "./execution-stop.js";
 import { configurationErrorDetail } from "./configuration-diagnostics.js";
 import type {
   ConfigurationOperations,
@@ -17,10 +18,10 @@ import {
   type ConfigurationStepCase,
 } from "./configuration-steps-contract.js";
 
-type Outcome = "passed" | "failed" | "blocked" | "stopped" | "skipped";
+type Outcome = "passed" | "failed" | "blocked" | "stopped" | "skipped" | "not-applicable";
 export interface ConfigurationStepResult {
   stepId: string;
-  operation: ConfigurationStep["op"] | BuildStep["op"] | "open-configuration";
+  operation: ConfigurationStep["op"] | BuildStep["op"] | "open-configuration" | "interruption";
   outcome: Outcome;
   trigger: "sequence" | "cleanup";
   error?: { code: string; reason: string; disposition: "blocked" | "failed" | "stop" };
@@ -52,6 +53,14 @@ export interface ConfigurationStepCaseResult {
   }>;
 }
 export interface ConfigurationStepsEnvironment {
+  stopSignal?: AbortSignal;
+  onProgress?(progress: {
+    cases: ConfigurationStepCaseResult[];
+    buildAttempted: boolean;
+    buildSubmitted: boolean;
+    taskMayStillBeRunning: boolean;
+  }): Promise<void>;
+  verifySource?(): Promise<void>;
   session: ExecutionContext;
   /** Supplies an already verified UI adapter; no startup or build API is part of this executor. */
   openConfiguration(platform: string): Promise<ConfigurationOperations>;
@@ -84,6 +93,7 @@ function failure(error: unknown, restoring = false): NonNullable<ConfigurationSt
         input: "配置输入失败",
         submission: "提交未能唯一确认",
         task: "任务跟踪中断",
+        interrupted: "用户停止执行，按规则收集任务并恢复配置",
       }[error.code],
     };
   return {
@@ -112,6 +122,7 @@ async function runCase(
   };
   let operations: ConfigurationOperations;
   try {
+    checkExecutionStop(env.stopSignal);
     await env.session.verify();
     operations = await env.openConfiguration(c.platform);
     if (operations.context.session !== env.session || operations.platform !== c.platform)
@@ -160,6 +171,7 @@ async function runCase(
     }
     try {
       out.startedAt = new Date().toISOString();
+      if (step.op !== "restore") checkExecutionStop(env.stopSignal);
       switch (step.op) {
         case "record":
           recovery = await operations.record(step.fields);
@@ -228,6 +240,12 @@ async function runCase(
       out.finishedAt = new Date().toISOString();
       if (step.op === "restore" && recovery)
         out.restorationTrace = structuredClone(recovery.restorationTrace);
+      await env.onProgress?.({
+        cases: [result],
+        buildAttempted: false,
+        buildSubmitted: false,
+        taskMayStillBeRunning: false,
+      });
     }
   }
   // Verify the session/page even when a port threw an unclassified error before writing.
@@ -262,10 +280,15 @@ export async function runConfigurationSteps(
   env: ConfigurationStepsEnvironment,
 ) {
   configurationStepsPlan(loaded); // Full semantic validation before the first environment callback.
+  const verifySource = async () => {
+    await loaded.verifySource?.();
+    if (env.verifySource !== loaded.verifySource) await env.verifySource?.();
+  };
+  await verifySource();
   const document = validateConfigurationSteps(loaded.document);
   if (document.schemaVersion === 2)
     return {
-      ...(await runBuildSteps(document, env)),
+      ...(await runBuildSteps(document, { ...env, verifySource }, loaded.inputs)),
       sourceSha256: loaded.sourceSha256,
       documentSha256: loaded.documentSha256,
     };
@@ -288,7 +311,12 @@ export async function runConfigurationSteps(
       });
       continue;
     }
-    const result = await runCase(c, env);
+    const result = await runCase(c, {
+      ...env,
+      onProgress: env.onProgress
+        ? (p) => env.onProgress!({ ...p, cases: [...cases, ...p.cases] })
+        : undefined,
+    });
     cases.push(result);
     stopped = result.stopFollowingCases;
   }

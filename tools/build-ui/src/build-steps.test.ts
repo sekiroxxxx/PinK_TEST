@@ -16,6 +16,7 @@ import type { CaseValue } from "./finalized-cases.js";
 import { valueHash } from "./plan-integrity.js";
 import type { Task } from "./common.js";
 import { submitBuild, waitBuild } from "./build-operations.js";
+import { ExecutionStop } from "./execution-stop.js";
 
 const path = (name: string) =>
   fileURLToPath(new URL(`../fixtures/configuration-steps/${name}.json`, import.meta.url));
@@ -361,3 +362,52 @@ test("pre-submit assertion failure restores without clicking; onFailure stop is 
     assert.deepEqual(f.values, f.initial);
   }
 });
+
+for (const phase of ["configuration", "owned-task", "restore-failure"] as const) {
+  test(`cooperative stop at ${phase} prevents later cases and retains safe recovery/collection`, async () => {
+    const f = fixture(phase === "restore-failure" ? "restore-failure" : "normal");
+    const stop = new ExecutionStop();
+    const doc = structuredClone(base);
+    doc.cases.push({ ...structuredClone(doc.cases[0]), caseId: "must-not-run" });
+    if (phase === "owned-task") {
+      const click = f.env.build.click;
+      f.env.build.click = async (operations, verify) => {
+        const at = await click(operations, verify);
+        f.tasks[0].state = "processing";
+        setTimeout(() => {
+          f.tasks[0].state = "success";
+        }, 50);
+        return at;
+      };
+    }
+    const result = await runConfigurationSteps(loaded(doc), {
+      ...f.env,
+      stopSignal: stop.signal,
+      onProgress: async (p) => {
+        const first = p.cases[0];
+        if (
+          first.steps.some(
+            (s) =>
+              s.stepId === (phase === "owned-task" ? "submitted" : "rename") &&
+              s.outcome === "passed",
+          )
+        )
+          stop.request("SIGINT");
+      },
+    });
+    assert.equal(result.stopped, true);
+    assert.equal(f.clicks(), phase === "owned-task" ? 1 : 0);
+    assert.equal(result.cases[1].outcome, "skipped");
+    assert.equal(result.cases[0].failure!.code, "interrupted");
+    if (phase === "restore-failure") assert.equal(result.cases[0].restoration, "failed");
+    else {
+      assert.equal(result.cases[0].restoration, "passed");
+      assert.deepEqual(f.values, f.initial);
+    }
+    if (phase === "owned-task") {
+      assert.equal(result.cases[0].tasks![0].state, "success");
+      assert.equal(result.cases[0].tasks![0].collected, true);
+      assert.equal("taskMayStillBeRunning" in result && result.taskMayStillBeRunning, false);
+    }
+  });
+}

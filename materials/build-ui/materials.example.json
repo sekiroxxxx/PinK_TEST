@@ -10,6 +10,9 @@
     "agcServices": {
       "path": "./agconnect-services.json"
     },
+    "nativeEncryption": {
+      "key": "<测试用脚本加密密钥>"
+    },
     "android": {
       "publish": { "apiLevel": 35 }
     },

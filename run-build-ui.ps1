@@ -16,6 +16,7 @@ param(
     [string]$Materials = '',
     [string]$CasesFile = '',
     [string]$StepsFile = '',
+    [string]$CatalogFile = '',
     [string]$RunConfig = '',
     [string]$ExpectedPlan = '',
     [switch]$CheckPlan,
@@ -34,12 +35,20 @@ if (-not (Test-Path -LiteralPath $entry)) {
     throw '工具尚未准备好，请先在 tools/build-ui 执行 npm ci 和 npm run build。'
 }
 $nodeCommand = Get-Command node.exe -ErrorAction Stop
-if ($StepsFile) {
-    $stepsAllowed = @('StepsFile','Pink','Project','Port','ConfigurationTimeoutSeconds','ResultsRoot','Preview','PreviewFile','ExpectedPlan','CheckPlan')
-    foreach ($key in $PSBoundParameters.Keys) { if ($key -notin $stepsAllowed) { throw "StepsFile 不能与 $key 混用；步骤启动使用显式 Pink/Project。" } }
+if ($StepsFile -or $CatalogFile) {
+    if ($StepsFile -and $CatalogFile) { throw 'StepsFile 和 CatalogFile 只能选择一个。' }
+    $stepsAllowed = @('StepsFile','CatalogFile','Materials','Pink','Project','Port','ConfigurationTimeoutSeconds','ResultsRoot','Preview','PreviewFile','ExpectedPlan','CheckPlan')
+    if ($CatalogFile) { $stepsAllowed += @('Cases','Groups') }
+    foreach ($key in $PSBoundParameters.Keys) { if ($key -notin $stepsAllowed) { throw "StepsFile/CatalogFile 不能与 $key 混用；步骤启动使用显式 Pink/Project。" } }
     if (-not $Pink -or -not $Project) { throw '步骤启动/预览必须提供 Pink 和 Project。' }
     $stepsEntry = Join-Path $PSScriptRoot 'tools/build-ui/dist/configuration-steps-cli.js'
-    $stepsArguments = @($stepsEntry, '--file', $StepsFile, '--pink', $Pink, '--project', $Project, '--port', $Port, '--configuration-timeout', $ConfigurationTimeoutSeconds, '--results', $ResultsRoot)
+    $stepsArguments = @($stepsEntry, '--pink', $Pink, '--project', $Project, '--port', $Port, '--configuration-timeout', $ConfigurationTimeoutSeconds, '--results', $ResultsRoot)
+    if ($CatalogFile) {
+        $stepsArguments += @('--catalog', $CatalogFile)
+        if ($Cases) { $stepsArguments += @('--cases', $Cases) }
+        if ($Groups) { $stepsArguments += @('--groups', $Groups) }
+    } else { $stepsArguments += @('--file', $StepsFile) }
+    if ($Materials) { $stepsArguments += @('--materials', $Materials) }
     if ($Preview) { $stepsArguments += '--preview' }
     elseif ($CheckPlan) { $stepsArguments += '--check-plan' }
     else { $stepsArguments += '--run' }

@@ -1,14 +1,94 @@
 # Windows PinK UI 构建工具
 
-本工具使用指定 PinK 打包版及现有工程，通过真实 UI 配置、提交和观察构建，不验证产物、不安装 SDK、不调用 PinK 内部自动化基座。`debug` 和 `release-a` 已扩展到18平台的适用基础配置；新增10平台的专属值沿用当前UI并核对，原8平台发布组合保留原专属基准。`existing` 沿用当前配置；`release-b` 和 `release-c-local` 仍限原优先8平台。每组最多2项：配置页就绪后逐个提交，取得唯一任务ID后继续组内下一项；本组终态、参数和卡片核对完成后才进入下一组。
+本工具使用指定 PinK 打包版及现有工程，通过真实 UI 配置、提交和观察构建，不验证产物、不安装 SDK、不调用 PinK 内部自动化基座。四组目录通过 `-CatalogFile` 转换为 v2；有序操作通过 `-StepsFile` 直接加载。每组最多2项：配置页就绪后逐个提交，取得唯一任务ID后继续组内下一项；本组终态、参数和卡片核对完成后才进入下一组。
 
-当前增加 PinK 0.0.2.0（1958 包）的七平台沿用配置基础链路及AGC单平台服务文件链路；旧组合的执行证据仍以结果文件记载的版本为准。需要 Windows、Node.js 24+ 和已能手动正常构建的工程及 SDK 环境。工具不修改引擎设置。
+需要 Windows、Node.js 24+ 和已能手动正常构建的工程及 SDK 环境。包和工程由启动参数显式指定，工具不修改引擎设置。1958 包及后续包的历史证据以各结果文件记载的版本、用例和范围为准，不替代当前版本的新入口验收。
 
-首批交付边界以[设计定稿](../../docs/pink-build-ui-automation-design.md#首批交付范围定稿2026-10-19)为准：[18平台用例](../../docs/pink-build-combination-design.md#18-个平台差异与可测性)是设计范围。现有17平台配置页基线、优先8平台相应组合、九项本地选项及历史只读之外，已增加七平台基础构建、AGC单平台构建和OpenPaaS专属配置检查。公共UI专项、三个新合并用例仍待实现；不代表这些范围或旧组合已在1958包重新验收。
+## Windows v2 试用基线（2026-10-26）
+
+交付形态为可追溯的源码基线，版本以所交付 Git commit 为准。当前包级证据来自 PinK `2610231949 / 0.0.2.0`、已准备工程与 custom 引擎；完整构建路径的首批语言范围为中文。英文目前只补验 web-desktop 中断路径，普通成功卡片和历史批次日期仍有中文定位，不能按英文完整链路已支持交付。全平台基础验收尚待执行，冻结源码不等于 18 平台四组全部通过。
+
+保留整个仓库中的工具源码、锁文件、用例目录和 fixtures；`dist/node_modules/results` 及 `materials/build-ui/local` 不入库。接收方准备 Node.js 24+ 后，在 PinK-Test 根目录执行以下准备命令；无需 PinK 源码或另装浏览器：
+
+```powershell
+npm ci --prefix .\tools\build-ui
+npm run build --prefix .\tools\build-ui
+```
+
+将[材料示例](../../materials/build-ui/materials.example.json)复制到本机私有材料清单，并填写所选用例实际需要的材料。首次选一例，先预览与核验，再执行同一份输入；修改 JSON、材料、包、工程或选择范围后重新预览。以下变量替换为本机路径，最后一条会操作 PinK 并提交所选构建：
+
+```powershell
+$qaInput = @{
+    CatalogFile = '.\tools\case-catalog\public-combinations.json'
+    Cases = 'review.publish.web-desktop'
+    Pink = 'C:\QA\PinK-package\PinK.exe'
+    Project = 'D:\QA\test-project'
+    Materials = '.\materials\build-ui\local\materials.json'
+    ResultsRoot = '.\results'
+}
+New-Item -ItemType Directory -Force .\results | Out-Null
+$qaPlan = '.\results\qa-web-desktop-plan.json' # 使用尚不存在的文件名
+.\run-build-ui.ps1 @qaInput -Preview -PreviewFile $qaPlan
+.\run-build-ui.ps1 @qaInput -ExpectedPlan $qaPlan -CheckPlan
+.\run-build-ui.ps1 @qaInput -ExpectedPlan $qaPlan
+```
+
+有序步骤文件改用 `-StepsFile <文件>`，并去掉 `CatalogFile/Cases`；不要混用 `-RunConfig`。未启动 PinK 时工具启动指定包与工程；已有同版、同工程且开放调试端口的实例可接入。未开放调试端口、身份不符或已有活动队列时按原因受阻，不强制退出用户实例。执行期间保持窗口可操作，每台机器同一时间运行一条链路，避免手动修改配置。
+
+结束查看本次目录的 `result.json/report.html`，同时检查用例结果、任务 ID、恢复及清理；Ctrl+C 请求安全停止并等待报告。缺材料、不适用和未实现分支保留原因，不计通过。旧 `-RunConfig/Profile/Suite` 不包含本批完整进程保护。下方日期章节记录演进过程；当前能力与准确限制以[输入合同](../../docs/pink-build-case-input-contract.md)为准。
+
+对固化版的全平台验收只安排每个平台一个具备前提的基础用例，使用 v2 入口、每组最多两项，核对配置到任务终态、参数、恢复和报告。基础用例按平台实际条件选取，不机械使用同一发布组合；缺材料/不适用单列，提交不明、身份失效或恢复失败按现有规则停止。已经验证的公共 UI、反向样本和全部组合不加入这一轮。此处是后续验收安排，本次固化不运行构建。
+
+旧 `Profile/Suite` 入口继续保留：`existing` 沿用当前配置，`debug/release-a` 含18平台适用基础项，`release-b/release-c-local` 限原优先8平台。[首批定稿](../../docs/pink-build-ui-automation-design.md#首批交付范围定稿2026-10-19)及后面的日期章节记录历史范围；当前 v2 能力和保留缺口以[输入合同](../../docs/pink-build-case-input-contract.md#四组目录接入-v2-与专项步骤2026-10-24离线)为准。
 
 入口统一为左侧 X-Device / X-Application 分类按钮，按可访问的 tab 名称与展开状态定位；顶部分类菜单在连续执行时出现 Webview 遮挡，故不再作为工具入口。启动时恢复最小化的指定 PinK 主窗口并请求前台显示，以使 Webview 正常渲染和接收输入。分类切换、配置和构建均为真实输入，不依赖固定坐标或新增快捷键。执行期间不要最小化窗口或同时操作配置。
 
-## 步骤 JSON v2：打开、关闭与构建（2026-10-23，仅离线验证）
+2026-10-24：新 `-CatalogFile` 入口的 web-desktop 单例实机验收已通过，[报告](../../results/2026-10-24-catalog-v2-web-desktop-1792837002174/2026-10-24T10-27-00.517Z-steps/report.html)包含修改 JSON 后的真实配置、任务关联、成功判定及自动恢复。使用当前 1949 包、原工程和 custom 引擎；未验证产物或重跑其他平台。已补已知阶段 ID 小写文案适配；初次失败、人为中断与观察器清理记录、准确证据边界见[验收记录](../../docs/pink-build-case-input-contract.md#四组统一入口-web-desktop-实机验收2026-10-24)。
+
+## Windows 停止与收尾（2026-10-26）
+
+`-CatalogFile/-StepsFile` 执行中按 Ctrl+C 会请求停止。工具完成当前原子操作，不再进入新步骤；已唯一关联的任务仍按原上限等待收尾，再在身份和任务状态安全时恢复原配置。不自动重试点击、取消构建或强制结束 PinK。停止期间应等待最终报告，不要继续结束执行进程。旧 `Profile/Suite` 入口不包含这批进程保护。
+
+启动进程与执行进程分开，Windows 下关闭启动进程也会通过断开通知请求执行进程收尾。拥有启动进程 IPC 的调用方可发送 `{ "type": "pink-steps-stop" }`，复用同一停止路径。直接强杀实际执行进程或断电无法继续内存恢复；结果保留为未完成，需核查现场。
+
+连接前创建 `result.json/report.html`，JSON 随执行更新；最终报告包含中断、恢复和资源释放结果。`lifecycle: finished` 表示执行已结束，仍须查看用例、恢复及清理结果；中断不会变成通过。观察器仅释放本次所有权对应的监听，外来监听保留并拦截。完整合同及证据见[中断与安全收尾](../../docs/pink-build-case-input-contract.md#windows-中断与安全收尾2026-10-26)。
+
+已用当前 1949 包、原工程和引擎完成 web-desktop 两项定向实机自检：配置修改后结束本次监管进程，以及任务 processing 时发送停止消息。均恢复配置、跳过后续用例并释放资源；后者任务收集到 success，仅提交一次。报告故意保留 `failed/stopped`，自检目标通过不等于中断用例构建通过。
+
+随后已针对中间检查点警告复现并修复 Windows 并发读取导致的 JSON 替换 `EPERM`：只对该次文件替换限时等待，超过 1s 仍报错，旧 JSON 保留；最终快照等待此前诊断归集。修复后的 web-desktop 配置中断验收没有警告，配置和资源恢复通过，未提交或重复构建。旧警告缺少 errno，历史报告保持原样；准确证据见[检查点修复](../../docs/pink-build-case-input-contract.md#检查点替换警告修复2026-10-26)。
+
+本次还修正工作台被后台商城嵌套 iframe 干扰的接入问题：Playwright 只接管工作台，Builder 沿用独立 CDP 连接；没有改第三方依赖或产品文件。英文文案适配仅核实 web-desktop 中断路径，不外推为其他平台和历史 UI 全部英文可用。
+
+## 四组目录与步骤共用 v2 入口（2026-10-24）
+
+`-CatalogFile` 接受现有四组用例文件，转换后与 `-StepsFile` 共用计划、启动、两项调度及报告。`-Cases/-Groups` 用于选择目录中的用例；原始步骤文件以 JSON 的 `cases/steps/finally` 顺序为准。旧 `-CasesFile/-Plan four-groups` 保持兼容，不会被静默切换执行语义。
+
+```powershell
+# 在 PinK-Test 根目录：以下两条只离线预览/核验，不连接 PinK；输出文件须尚不存在
+.\run-build-ui.ps1 -CatalogFile .\tools\case-catalog\public-combinations.json -Cases review.publish.web-desktop -Pink '<待测包目录>' -Project '<工程目录>' -Materials '<私有材料清单.json>' -Preview -PreviewFile '<新计划.json>'
+.\run-build-ui.ps1 -CatalogFile .\tools\case-catalog\public-combinations.json -Cases review.publish.web-desktop -Pink '<待测包目录>' -Project '<工程目录>' -Materials '<私有材料清单.json>' -ExpectedPlan '<同一计划.json>' -CheckPlan
+
+# 执行时去掉 CheckPlan；使用相同输入与 ExpectedPlan，才进入启动/接入和 UI 链路
+# FORM 只检查 UI：选择 -Groups conditional -Cases FORM-C06.s02（不附加基础构建）
+# 字段和可组合操作清单；此命令不连接 PinK
+.\run-build-ui.ps1 -FieldCapabilities
+```
+
+目录源、FORM 来源、材料及工程变化会使预览失效。缺材料、不适用或缺操作的条目保留在计划和报告里，不执行省略断言的草稿；全部不可执行时直接产出报告，不启动/连接 PinK。`ready` 仅指离线合同完整，不是实机通过。
+
+此批把文件取消、字符串清空、场景保护、初态要求及跨修改/重开的保留值断言接成普通 v2 操作。已有 FORM 反向样本可以展开为可编辑步骤，仍不提交异常构建；敏感空值通过 `input.clear-field` 与 `assert/empty` 检查。发布加密引用 `nativeEncryption.key`，私有清单示例见 [材料目录](../../materials/build-ui/README.md)。其他适配范围和保留缺口见[当前合同](../../docs/pink-build-case-input-contract.md#四组目录接入-v2-与专项步骤2026-10-24离线)。本批仅离线验证，未修改前端或引擎，未启动 PinK/提交构建。
+
+## v2 跨平台两项调度（2026-10-24，第三批记录）
+
+`-StepsFile` 的同一份 v2 JSON 现在可含多平台 `cases`。按文件顺序每组最多两例：组内逐例配置、回读、唯一关联提交，走到 `build.wait` 暂挂；提交阶段结束后依次等待、核对及恢复，本组收尾后才开下一组。同平台重复会提前分组，避免配置和恢复基线互相覆盖；受阻或提前结束不补进第三项。等待后的 JSON 步骤仍按顺序执行。
+
+X-Device / X-Application 复用已有 Builder 和完整任务观察器，启动时统一核对基线，切分类保留观察。每例通过自己的提交步骤引用和 taskId 核对入队/终态参数；任务与结果不能跨例串用。普通失败安全收尾后按 `onFailure` 继续或停止；提交无法唯一确认、身份/观察失效、超时或恢复失败立即停止新提交，不自动重试。已关联任务仍尽量收集，不安全时不恢复配置。
+
+离线预览列出两项分组及屏障策略，并纳入哈希。结果 schema2 包含 `execution/groups`，保留用例与任务关联、分组时刻和实际队列观察；未观察到排队不冒作队列通过。该批先完成离线验证，随后[微信与 Web 手机跨分类实机验收](../../results/2026-10-24-v2-cross-platform-1792824582684/2026-10-24T07-11-45.981Z-steps/report.html)两例均通过配置、任务参数、成功卡片及恢复。详见[调度合同](../../docs/pink-build-case-input-contract.md#v2-跨平台两项调度2026-10-24第三批离线验证)，第四组迁移/材料缺口仍单列。
+
+仅构建用例需要独立的“构建”按钮。v2 已支持显式阶段记录、连接/拆分、回读/断言和 `finally` 恢复；普通构建仍不自动解除用户串联，提交快照与点击前都检查仅构建范围，不能把复合按钮直接当作构建按钮点击。阶段专项样本见 [stage-controls-v2.json](fixtures/configuration-steps/stage-controls-v2.json)，准确初态、操作及失败合同见[阶段操作](../../docs/pink-build-case-input-contract.md#v2-阶段串联操作2026-10-24)。枚举目标使用实际 UI 候选值，例如当前微信横屏为 `landscapeRight`，Web 手机横屏为 `landscape`。下拉输入失败会关闭该控件的遗留弹层后保留原错误，供既有恢复步骤收尾；弹层不能安全关闭时停止后续操作，同时保留原错误与清理诊断。
+
+## 步骤 JSON v2：打开、关闭与构建（2026-10-23，第一批记录）
 
 新增 `config.open/config.close/build.submit/build.wait`，并扩展构建快照和结果断言；QA 可以在 JSON 中安排配置、关闭重开、提交、结果检查及 `finally` 恢复。v1 保持原行为。完整输入/依赖/失败合同见[步骤 v2](../../docs/pink-build-case-input-contract.md#步骤文件-v2页面与构建生命周期2026-10-23仅离线验证)。
 
@@ -43,6 +123,20 @@ try {
 操作错误区分 `blocked/failed/stop`：前提缺失受阻，断言不符失败，身份/快照失效或恢复失败停止。停止后保留配置现场，已有报告机制继续记录原因；敏感原值和恢复记录只留在进程内，不加入公共报告。现有用例 JSON、四组入口及结果 schema 不变；后续新增的有限步骤格式见下节，前端编排尚未接入。
 
 本批只编译工具并做离线观察夹具验证：正常组合、身份漂移、页面重建、旧快照拒绝、隐藏子项恢复、部分输入异常与恢复失败。夹具提供 UI 观察及输入端口，实际执行共同操作与控制器；不替代 PinK 实机验收。未连接/启动 PinK、提交构建、修改 SDK/引擎或验证产物。
+
+## v2 保留值与平台操作（2026-10-24，第二批）
+
+步骤 JSON 新增保留初值及断言、配置就绪/依赖准备、网络超时展开、隐藏前回读证据、Google 图标、OpenPaaS 已有游戏和 AGC 文件/包名检查。保留和隐藏值进入同一份提交快照，继续核对入队和终态参数；缺少观察不计通过。沿用现有输入、任务关联与失败恢复代码，细节见[当前步骤合同](../../docs/pink-build-case-input-contract.md#v2-保留值联动和平台专属操作2026-10-24第二批离线验证)。
+
+四组转换预览已使用这些操作。第二批开放已登记的18平台，AGC/OpenPaaS 必须有专属提交前检查；当时仅单平台串行，跨平台调度现见第三批章节。第四组复杂专项及部分材料/输入合同缺口继续单列。旧四组入口保留，前端未改。本批仅离线验证，没有启动 PinK 或提交真实构建。
+
+## v2 场景、材料与四组迁移预览（2026-10-24，第一批记录）
+
+`-StepsFile` 已支持 `-Materials`。v2 的设置和断言可使用现有 `$scene` / `$material`；运行前绑定指定工程和材料，缺材料阻止该用例，输入变化使预览失效。场景恢复同时保护初始场景与场景集合，密码不进入计划或报告。v1 行为不变。
+
+新增 Node `configuration-steps-cli --catalog` 离线转换预览，直接读取 `tools/case-catalog/public-combinations.json`，保留四组身份、终点、材料/适用性及尚未迁移的断言。只给合同完整的条目输出 v2 `document`，不会将遗漏专属检查的条目标成可执行。正式 18 平台四组仍有迁移缺口；目前不替换原四组入口。命令与边界见[输入合同](../../docs/pink-build-case-input-contract.md#v2-输入与四组迁移第一批2026-10-24仅离线验证)。
+
+第一批仅离线验证，当时只读确认现场包为 `PinK-win32-x64-2610231949-0.0.2.0`，未验证新包 UI。当时未接入的专属操作及两项调度现见第二、第三批章节；前端未改。
 
 ## 配置步骤加载与编排（2026-10-23，第二批仅离线验证）
 

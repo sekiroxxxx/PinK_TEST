@@ -16,6 +16,48 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   return { root, run, file: join(run, "result.json") };
 }
 
+test("checkpoint and interrupted reports never imply finished acceptance", async (t) => {
+  const { file } = await fixture(t);
+  const data = {
+    kind: "pink-configuration-steps-result",
+    schemaVersion: 2,
+    outcome: "incomplete",
+    lifecycle: "running",
+    cases: [{ caseId: "stopped-case", outcome: "not-run", steps: [] }],
+  };
+  await writeFile(file, JSON.stringify(data));
+  assert.match(await readFile(await writeResultReport(file), "utf8"), /检查点，不能计为通过/);
+  await writeFile(
+    file,
+    JSON.stringify({
+      ...data,
+      lifecycle: "finished",
+      outcome: "failed",
+      interruption: { source: "parent-disconnect", requestedAt: "2026-10-26T00:00:00.000Z" },
+      checkpointErrors: [{ chain: [{ message: "EPERM: checkpoint rename denied" }] }],
+      cleanup: [{ resource: "builder-probe", outcome: "failed", reason: "probe owner changed" }],
+      cases: [
+        {
+          caseId: "stopped-case",
+          outcome: "stopped",
+          restoration: "passed",
+          failure: { reason: "停止后已安全恢复" },
+          tasks: [{ taskId: "owned-task" }],
+          steps: [],
+        },
+      ],
+    }),
+  );
+  const html = await readFile(await writeResultReport(file), "utf8");
+  assert.match(html, /parent-disconnect/);
+  assert.match(html, /恢复：passed/);
+  assert.match(html, /owned-task/);
+  assert.match(html, /通过 0/);
+  assert.match(html, /EPERM: checkpoint rename denied/);
+  assert.match(html, /builder-probe释放失败：probe owner changed/);
+  assert.doesNotMatch(html, /本次没有失败、受阻或未完成用例/);
+});
+
 test("configuration step reports keep assertion, recovery and policy stop diagnostics", async (t) => {
   const { file } = await fixture(t);
   await writeFile(

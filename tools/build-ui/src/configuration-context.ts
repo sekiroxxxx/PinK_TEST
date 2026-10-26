@@ -24,7 +24,8 @@ export class ConfigurationOperationError extends Error {
       | "restore"
       | "input"
       | "submission"
-      | "task",
+      | "task"
+      | "interrupted",
     message: string,
     readonly disposition: "blocked" | "failed" | "stop",
     options?: ErrorOptions & {

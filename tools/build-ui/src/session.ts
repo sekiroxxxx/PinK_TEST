@@ -3,7 +3,8 @@ import { promisify } from "node:util";
 import { resolve } from "node:path";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { chromium, type Browser, type Page } from "playwright-core";
+import { type Browser, type Page } from "playwright-core";
+import { connectWorkbench } from "./workbench-cdp.js";
 import { waitFor, type Options } from "./common.js";
 import { readWorkspaceObservation, verifyWorkspaceObservation } from "./workspace-identity.js";
 
@@ -177,7 +178,7 @@ if ($wasMinimized) { [void][PinkBuildWindow]::ShowWindowAsync($pinkProcess.MainW
     60_000,
     signal,
   );
-  const browser = await chromium.connectOverCDP(endpoint, { timeout: 15_000 });
+  const browser = await connectWorkbench(endpoint);
   return { browser, endpoint, pid, mode };
 }
 

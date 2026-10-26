@@ -37,6 +37,8 @@ export interface FinalCase {
   group: FinalGroup;
   endpoint: "build" | "ui";
   values: CaseValues;
+  /** Unresolved input expressions for the v2 compiler; never serialize private bound values. */
+  inputs?: CaseValues;
   retained: string[];
   scenario?: string;
   binding?: CaseBinding;
@@ -61,7 +63,12 @@ export async function selectFinalizedCases(
   ids?: string,
   groups?: string,
   materials: FinalMaterials = {},
-  source: { catalogPath?: string; project?: string; catalog?: CatalogDocument } = {},
+  source: {
+    catalogPath?: string;
+    project?: string;
+    catalog?: CatalogDocument;
+    captureInputs?: boolean;
+  } = {},
 ): Promise<BuildCase[]> {
   const catalog = caseContract.normalize(
     validateExecutableCatalog(
@@ -181,6 +188,7 @@ export async function selectFinalizedCases(
       group: scenario ? "conditional" : combo.template,
       endpoint: scenario?.executionEndpoint ?? "build",
       values: resolved.values,
+      ...(source.captureInputs ? { inputs: structuredClone(values) } : {}),
       retained: [...new Set(retained)],
       scenario: scenario?.id,
       binding,
@@ -252,6 +260,7 @@ export async function selectFinalizedCases(
           const blockers: FinalCase["blockers"] = [];
           const target = sample.executionByPlatform?.[pid] ?? sample.execution;
           const execution = target && structuredClone(target);
+          const inputExecution = execution && structuredClone(execution);
           if (sample.kind === "applicability-only")
             blockers.push({ kind: "not-applicable", reason: "适用性说明，不计反向执行覆盖" });
           else if (!execution)
@@ -304,13 +313,18 @@ export async function selectFinalizedCases(
               group: "conditional",
               endpoint: "ui",
               values: resolved.values,
+              ...(source.captureInputs ? { inputs: structuredClone(targets) } : {}),
               retained: [],
               scenario: sample.id,
               executionOperation: "configure-and-restore",
               materialRefs: [...new Set([...resolved.materialRefs, ...prepared.materialRefs])],
               blockers,
               formValidation: execution
-                ? { sampleId: sample.id, sourceSha256, execution }
+                ? {
+                    sampleId: sample.id,
+                    sourceSha256,
+                    execution: source.captureInputs ? inputExecution! : execution,
+                  }
                 : undefined,
             },
           });

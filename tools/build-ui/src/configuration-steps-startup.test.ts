@@ -39,6 +39,36 @@ test("launch plan binds JSON and exact installation/project before any UI connec
     await verifyConfigurationStepsPlan(file, plan);
     assert.equal(plan.runtimeVerified, false);
     assert.equal(plan.buildSubmitted, false);
+    const multiFile = join(root, "multi.json");
+    await writeFile(
+      multiFile,
+      JSON.stringify({
+        kind: "pink-configuration-steps",
+        schemaVersion: 2,
+        cases: ["web-desktop", "wechatgame"].map((platform) => ({
+          caseId: `case.${platform}`,
+          platform,
+          steps: [
+            { id: "page", op: "config.open" },
+            { id: "close", op: "config.close", page: "page" },
+          ],
+          finally: [
+            { id: "cleanup", op: "config.open" },
+            { id: "cleanupClose", op: "config.close", page: "cleanup" },
+          ],
+        })),
+      }),
+    );
+    const multi = await configurationStepsLaunchPlan(
+      await loadConfigurationSteps(multiFile),
+      options,
+    );
+    assert.equal(multi.steps.execution?.maxTasksPerGroup, 2);
+    assert.deepEqual(multi.steps.execution?.groups[0].caseIds, [
+      "case.web-desktop",
+      "case.wechatgame",
+    ]);
+    await assert.rejects(verifyConfigurationStepsPlan(file, multi), /不符/);
     await assert.rejects(
       verifyConfigurationStepsPlan(
         file,

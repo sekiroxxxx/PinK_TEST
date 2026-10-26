@@ -15,6 +15,10 @@ import type { BuildCase } from "./build-cases.js";
 import type { CaseValue, CaseValues, FinalCase } from "./finalized-cases.js";
 import { caseContract } from "./case-contract.js";
 import { confirmScenes, sceneValues, type SceneContext } from "./case-inputs.js";
+import {
+  prepareConfigurationWrite,
+  configurationValueMatches,
+} from "./configuration-step-values.js";
 
 export class CasePrerequisiteError extends Error {
   constructor(
@@ -94,10 +98,8 @@ async function assign(
   };
   // Editing encryption while Debug is true is disabled by the native custom views.
   const encryption = `packages.${form.platform}.encrypted`;
-  if (encryption in values) {
-    const before = await form.inspect(encryption);
-    if (before?.disabled && !same(before.value, values[encryption])) await write("debug", false);
-  }
+  if (encryption in values)
+    await prepareConfigurationWrite(form, encryption, values[encryption], write);
   for (const key of ["name", "buildPath", "outputName"])
     if (key in values) await write(key, values[key]);
   const sequence = [
@@ -119,17 +121,21 @@ async function assign(
         "initial-state",
         "所选预设没有原生模块，包装控件不适用；不补写隐藏字段",
       );
-    if (values.nativeCodeBundleMode === "asmjs" && packaging.value !== "asmjs")
-      await write("wasmCompressionMode", false);
+    await prepareConfigurationWrite(
+      form,
+      "nativeCodeBundleMode",
+      values.nativeCodeBundleMode,
+      write,
+    );
     await write("nativeCodeBundleMode", values.nativeCodeBundleMode);
   }
-  const compression = await form.inspect("mainBundleCompressionType");
-  if (
-    compression?.value === "subpackage" &&
-    values.mainBundleCompressionType !== undefined &&
-    values.mainBundleCompressionType !== "subpackage"
-  )
-    await write("mainBundleCompressionType", "none");
+  if (values.mainBundleCompressionType !== undefined)
+    await prepareConfigurationWrite(
+      form,
+      "mainBundleCompressionType",
+      values.mainBundleCompressionType,
+      write,
+    );
   for (const key of ["server", "mainBundleIsRemote", "mainBundleCompressionType", "md5Cache"])
     if (key in values) await write(key, values[key]);
   // When the adapter hides the text, verify the declared initial text before hiding it.
@@ -241,22 +247,7 @@ async function assign(
         state: `cleared-by-ui-parent:${control.derivedFrom}`,
         expected: actual,
       });
-    const map = key.endsWith(".targetLanguageMap");
-    if (
-      !same(actual, target) &&
-      !(
-        map &&
-        actual &&
-        typeof actual === "object" &&
-        !Array.isArray(actual) &&
-        typeof target === "object" &&
-        !Array.isArray(target) &&
-        Object.entries(actual).every(([locale, v]) =>
-          same(v, (target as Record<string, CaseValue>)[locale] ?? { locale, value: false }),
-        )
-      )
-    )
-      form.check("final-readback", key, false);
+    if (!configurationValueMatches(key, actual, target)) form.check("final-readback", key, false);
     evidence.values[key] = safe(key, actual);
   }
 }

@@ -5,13 +5,16 @@ import {
 } from "./build-steps-contract.js";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { caseContract } from "./case-contract.js";
+import { caseContract, type FieldType } from "./case-contract.js";
 import { describeFieldCapabilities, supportedFieldTypes } from "./field-capabilities.js";
 import type { CaseValue } from "./finalized-cases.js";
 import { configurationFamilies } from "./configuration-operations.js";
 import { platformCatalog } from "./platform-catalog.js";
 import { contentHash, valueHash } from "./plan-integrity.js";
 import { validateConfigurationTargets, type ConfigurationTarget } from "./configuration-targets.js";
+import { loadStepInputs, type StepInputs, type StepInputOptions } from "./step-inputs.js";
+import { stepObservationFields } from "./configuration-step-values.js";
+import { buildStepScheduling, buildStepGroups } from "./build-step-scheduling.js";
 
 export type ConfigurationStep = { id: string } & (
   | { op: "record"; fields: string[] }
@@ -50,6 +53,23 @@ export interface LoadedConfigurationSteps {
   sourceSha256: string;
   documentSha256: string;
   document: ConfigurationStepsDocument | BuildStepsDocument;
+  inputs?: StepInputs;
+  catalog?: {
+    source: { path: string; sha256: string; revision: string };
+    compilationSha256: string;
+    inputs: StepInputs["preview"];
+    selection: { cases?: string; groups?: string };
+    cases: Array<{
+      caseId: string;
+      platform: string;
+      group: string;
+      endpoint: string;
+      status: string;
+      sourceCaseIds?: string[];
+      gaps: Array<{ kind: string; reason: string }>;
+    }>;
+  };
+  verifySource?(): Promise<void>;
 }
 
 function fail(path: string, reason: string): never {
@@ -82,10 +102,15 @@ export function validateConfigurationSteps(
   input: unknown,
 ): ConfigurationStepsDocument | BuildStepsDocument {
   if (input && typeof input === "object" && "schemaVersion" in input && input.schemaVersion === 2)
-    return validateBuildSteps(input, validateConfigurationStepsV1);
+    return validateBuildSteps(input, (projection) =>
+      validateConfigurationStepsV1(projection, true),
+    );
   return validateConfigurationStepsV1(input);
 }
-function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocument {
+function validateConfigurationStepsV1(
+  input: unknown,
+  references = false,
+): ConfigurationStepsDocument {
   const doc = object(input, "document");
   keys(doc, ["kind", "schemaVersion", "cases", "targets"], "document");
   if (doc.kind !== "pink-configuration-steps" || doc.schemaVersion !== 1)
@@ -104,7 +129,11 @@ function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocumen
     const target = targets.find((p) => p.id === c.platform);
     if (!platformCatalog.some((p) => p.id === c.platform) && !target)
       fail(path, "平台尚无现有适配或标准目标描述");
-    const fieldTypes = { ...supportedFieldTypes, ...target?.fields };
+    const fieldTypes: Record<string, FieldType> = {
+      ...supportedFieldTypes,
+      ...(references ? stepObservationFields : {}),
+      ...target?.fields,
+    };
     const field = (value: unknown, at: string): string => {
       if (typeof value !== "string" || !Object.hasOwn(fieldTypes, value))
         fail(at, "字段尚无现有适配");
@@ -123,15 +152,26 @@ function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocumen
       return result;
     };
     const literal = (key: string, value: unknown, at: string) => {
-      if (sensitiveConfigurationField(key)) fail(at, "本批不支持在步骤文件内填写或比较敏感值");
+      if (
+        sensitiveConfigurationField(key) &&
+        !(references && caseContract.reference(value)?.kind === "material")
+      )
+        fail(at, "敏感字段须使用 v2 材料引用，不能在步骤文件内填写或比较明文");
       const noReference = (v: unknown): void => {
         if (v && typeof v === "object") {
           if (
             Object.keys(v).some(
-              (k) => k.startsWith("$") || ["__proto__", "constructor", "prototype"].includes(k),
+              (k) =>
+                (!references && k.startsWith("$")) ||
+                ["__proto__", "constructor", "prototype"].includes(k),
             )
           )
-            fail(at, "步骤格式尚未接入材料/场景引用或保留键");
+            fail(at, "步骤格式不支持此引用或保留键");
+          if (references && Object.keys(v).some((k) => k.startsWith("$"))) {
+            if (!caseContract.reference(v)) fail(at, "未知引用格式");
+            caseContract.validateValue(key, v, fieldTypes[key], at);
+            return;
+          }
           Object.values(v).forEach(noReference);
         }
       };
@@ -172,7 +212,13 @@ function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocumen
           const capability = describeFieldCapabilities().supportedFields.find((f) => f.key === key);
           if (
             capability
-              ? capability.operation !== "set-target-and-read-back"
+              ? capability.operation !== "set-target-and-read-back" &&
+                !(
+                  references &&
+                  (capability.operation === "scene-selection" ||
+                    (key === "packages.google-play.customIcon" &&
+                      ["default", "custom"].includes(String(step.value))))
+                )
               : !Object.hasOwn(target?.fields ?? {}, key)
           )
             fail(at, "该字段需要尚未接入步骤格式的专用操作");
@@ -182,6 +228,8 @@ function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocumen
             (typeof step.input !== "string" || !["string", "number"].includes(fieldTypes[key].kind))
           )
             fail(at, "input 仅用于文本或数值输入");
+          if (step.input !== undefined && sensitiveConfigurationField(key))
+            fail(at, "敏感字段不能使用明文 input 覆盖材料");
           revision++;
           break;
         }
@@ -244,7 +292,10 @@ function validateConfigurationStepsV1(input: unknown): ConfigurationStepsDocumen
   return structuredClone(doc) as unknown as ConfigurationStepsDocument;
 }
 
-export async function loadConfigurationSteps(file: string): Promise<LoadedConfigurationSteps> {
+export async function loadConfigurationSteps(
+  file: string,
+  options: StepInputOptions = {},
+): Promise<LoadedConfigurationSteps> {
   const path = resolve(file);
   const bytes = await readFile(path);
   let raw: unknown;
@@ -254,13 +305,37 @@ export async function loadConfigurationSteps(file: string): Promise<LoadedConfig
     throw new Error("步骤用例文件不是有效 JSON（内容已省略）");
   }
   const document = validateConfigurationSteps(raw);
-  return { path, sourceSha256: contentHash(bytes), documentSha256: valueHash(document), document };
+  if (document.schemaVersion === 1 && options.materials)
+    throw new Error("材料引用仅支持 v2 步骤文件");
+  return {
+    path,
+    sourceSha256: contentHash(bytes),
+    documentSha256: valueHash(document),
+    document,
+    inputs: document.schemaVersion === 2 ? await loadStepInputs(document, options) : undefined,
+  };
 }
 
 export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
-  const document = validateConfigurationSteps(loaded.document);
+  const emptyCatalog =
+    loaded.document.schemaVersion === 2 &&
+    loaded.document.cases.length === 0 &&
+    loaded.catalog?.cases.length &&
+    loaded.catalog.cases.every((c) => c.status !== "ready");
+  const document = emptyCatalog
+    ? structuredClone(loaded.document)
+    : validateConfigurationSteps(loaded.document);
+  if (
+    loaded.catalog &&
+    JSON.stringify(
+      loaded.catalog.cases.filter((c) => c.status === "ready").map((c) => c.caseId),
+    ) !== JSON.stringify(document.cases.map((c) => c.caseId))
+  )
+    throw new Error("四组迁移中的可运行集合与步骤文件不一致");
   if (valueHash(document) !== loaded.documentSha256)
     throw new Error("已加载用例被修改，请重新加载文件");
+  if (loaded.inputs && loaded.inputs.preview.documentSha256 !== loaded.documentSha256)
+    throw new Error("材料/场景绑定不属于当前步骤文件，请重新加载");
   return {
     kind: "pink-configuration-steps-plan",
     schemaVersion: document.schemaVersion,
@@ -271,9 +346,8 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
       ? {
           execution: {
             willSubmit: document.cases.some((c) => c.steps.some((s) => s.op === "build.submit")),
-            maxTasksPerCase: 1,
-            maxTasksPerGroup: 1,
-            scheduling: "serial",
+            ...buildStepScheduling,
+            groups: buildStepGroups(document.cases),
             associationTimeoutMs: 30_000,
             queueTimeoutMs: 1_800_000,
             buildTimeoutMs: 600_000,
@@ -282,6 +356,8 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
       : {}),
     sourceSha256: loaded.sourceSha256,
     documentSha256: loaded.documentSha256,
+    ...(loaded.catalog ? { catalog: structuredClone(loaded.catalog) } : {}),
+    ...(loaded.inputs ? { inputs: loaded.inputs.preview } : {}),
     targets: document.targets ?? [],
     cases:
       document.schemaVersion === 2

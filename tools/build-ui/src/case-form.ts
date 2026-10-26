@@ -14,6 +14,9 @@ import {
 import type { CaseValue } from "./finalized-cases.js";
 import { platformEntry } from "./platform-catalog.js";
 import type { ConfigurationTarget } from "./configuration-targets.js";
+import { readStageUi, changeStageUi } from "./stage-ui.js";
+import type { StageView } from "./configuration-stages.js";
+import { configurationUiTitles } from "./builder-ui-labels.js";
 
 export interface CaseControl {
   value: CaseValue;
@@ -109,6 +112,16 @@ export class CaseForm {
   }
 
   async inspect(key: string): Promise<CaseControl | null> {
+    if (key === "packages.openpaas.appid" && this.platform === "openpaas") {
+      const game = await this.openpaasPage();
+      return {
+        kind: "select",
+        value: game.id,
+        selector: "",
+        disabled: false,
+        choices: game.ids.map((id) => ({ value: id, selector: "", disabled: false })),
+      };
+    }
     const hint = this.hint(key);
     const control = await this.builder.caseDom(
       (document, key, hint) => {
@@ -368,6 +381,22 @@ export class CaseForm {
     await this.builder.configurationPage();
   }
 
+  async ready() {
+    await this.builder.configurationPage();
+  }
+  async configurationPage() {
+    return this.builder.configurationPage();
+  }
+  async expandSection(label: string) {
+    await this.builder.expandSection(label, this.beforeInput);
+  }
+  async openpaasPage() {
+    return this.builder.openpaasPage();
+  }
+  async selectOpenpaasGame(id: string) {
+    await this.builder.selectOpenpaasGame(id, this.beforeInput);
+  }
+
   async alerts(key: string): Promise<string[]> {
     const field = await this.read(key);
     return this.builder.caseDom((document, selector) => {
@@ -397,17 +426,60 @@ export class CaseForm {
   }
 
   async primaryBuildEnabled(): Promise<boolean> {
-    return this.builder.caseDom((document) => {
-      const buttons = [...document.querySelectorAll<HTMLButtonElement>("button")].filter(
-        (button) =>
-          button.getClientRects().length > 0 && ["构建", "Build"].includes(button.innerText.trim()),
-      );
-      if (buttons.length !== 1) throw new Error("主构建按钮无法唯一识别");
-      const button = buttons[0];
-      return (
-        !button.disabled &&
-        button.getAttribute("aria-disabled") !== "true" &&
-        !button.hasAttribute("data-disabled")
+    return !(await this.readStages()).buttons.find((b) => b.stage === "build")!.disabled;
+  }
+
+  async readStages() {
+    return this.builder.caseDom(readStageUi);
+  }
+
+  async changeStage(kind: "link" | "unlink", anchor: string, stage: string, before: StageView) {
+    await changeStageUi(this.builder, this.signal, this.beforeInput, kind, anchor, stage, before);
+  }
+
+  async stageHint(control: "button" | "link" | "unlink", stage: string) {
+    const view = await this.readStages();
+    const candidates =
+      control === "button" ? view.buttons : control === "link" ? view.links : view.unlinks;
+    const targets = candidates.filter((item) => item.stage === stage);
+    if (targets.length !== 1 || !targets[0].selector) throw new Error("阶段提示目标不唯一");
+    const selector = targets[0].selector;
+    await this.builder.caseHover(selector, this.beforeInput);
+    return waitFor(
+      "目标阶段提示",
+      async () => {
+        await this.beforeInput?.();
+        return this.builder.caseDom((document, selector) => {
+          const target = document.querySelector(selector);
+          // Current Base UI exposes data-popup-open rather than aria-describedby.
+          if (!target?.matches(":hover") || !target.hasAttribute("data-popup-open")) return;
+          const messages = [
+            ...document.querySelectorAll('[data-slot="tooltip-content"][data-open]'),
+          ].filter((e) => !!e.getClientRects().length);
+          if (messages.length > 1) throw new Error("多个阶段提示同时可见，无法唯一关联");
+          return messages[0]?.textContent?.trim() || undefined;
+        }, selector);
+      },
+      5000,
+      this.signal,
+    ).catch(async (cause) => {
+      if (this.signal.aborted) throw cause;
+      await this.beforeInput?.();
+      const observed = await this.builder.caseDom((document, selector) => {
+        const target = document.querySelector(selector);
+        return {
+          hovered: target?.matches(":hover"),
+          popupOpen: target?.hasAttribute("data-popup-open"),
+          visibleTooltips: [...document.querySelectorAll('[data-slot="tooltip-content"]')].filter(
+            (e) => !!e.getClientRects().length,
+          ).length,
+        };
+      }, selector);
+      throw new ConfigurationOperationError(
+        "assertion",
+        "悬停目标阶段后未出现可唯一关联的提示",
+        "failed",
+        { cause, diagnostic: { phase: "stage-hint", observations: observed } },
       );
     });
   }
@@ -418,7 +490,10 @@ export class CaseForm {
     await this.builder.closeConfiguration(this.verifySession);
     await this.verifySession?.();
     const view = await this.builder.openConfigurationPage(platform.label, this.verifySession);
-    if (view.title !== platform.configurationTitle) throw new Error("重开后平台身份不一致");
+    const titles = this.target
+      ? [platform.configurationTitle!]
+      : configurationUiTitles(this.platform, platform.configurationTitle!);
+    if (!titles.includes(view.title)) throw new Error("重开后平台身份不一致");
   }
 
   async restoreControl(key: string, original: CaseControl): Promise<void> {
@@ -604,6 +679,11 @@ export class CaseForm {
 
   async set(key: string, target: CaseValue, input?: string, enumLabel?: string): Promise<boolean> {
     let current = await this.read(key);
+    if (key === "packages.openpaas.appid" && this.platform === "openpaas") {
+      if (current.value === target) return false;
+      await this.selectOpenpaasGame(String(target));
+      return true;
+    }
     if (key === "buildPath") {
       if (
         typeof target !== "string" ||
@@ -716,43 +796,83 @@ export class CaseForm {
           enumLabel = labels[String(target)] ?? String(target);
         }
       }
-      await this.click("case-control", current.selector);
-      const actual = key === "sourceMaps" && target !== "inline" ? target === "true" : target;
-      const optionLabel = await waitFor(
-        `下拉候选就绪：${key}/${String(target)}`,
-        () =>
-          this.builder.caseDom(
-            (document, value, enumLabel) => {
-              const all = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
-                (el) => el.getClientRects().length > 0,
-              );
-              const choices = all.filter(
-                (el) =>
-                  el.getAttribute("data-pink-enum-value") === JSON.stringify(value) ||
-                  el.getAttribute("data-value") === String(value) ||
-                  (enumLabel !== undefined && el.textContent?.trim() === enumLabel),
-              );
-              if (choices.length > 1) throw new Error("下拉候选无法唯一对应目标");
-              if (!choices.length) return undefined;
-              const el = choices[0];
-              if (el.getAttribute("aria-disabled") === "true" || el.hasAttribute("data-disabled"))
-                throw new Error("目标下拉候选已禁用");
-              return el.textContent?.trim() || undefined;
-            },
-            actual,
-            enumLabel,
-          ),
-        15_000,
-        this.signal,
-      );
       try {
+        await this.click("case-control", current.selector);
+        const actual = key === "sourceMaps" && target !== "inline" ? target === "true" : target;
+        const optionLabel = await waitFor(
+          `下拉候选就绪：${key}/${String(target)}`,
+          () =>
+            this.builder.caseDom(
+              (document, value, enumLabel) => {
+                const all = [...document.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+                  (el) => el.getClientRects().length > 0,
+                );
+                const choices = all.filter(
+                  (el) =>
+                    el.getAttribute("data-pink-enum-value") === JSON.stringify(value) ||
+                    el.getAttribute("data-value") === String(value) ||
+                    (enumLabel !== undefined && el.textContent?.trim() === enumLabel),
+                );
+                if (choices.length > 1) throw new Error("下拉候选无法唯一对应目标");
+                if (!choices.length) return undefined;
+                const el = choices[0];
+                if (el.getAttribute("aria-disabled") === "true" || el.hasAttribute("data-disabled"))
+                  throw new Error("目标下拉候选已禁用");
+                return el.textContent?.trim() || undefined;
+              },
+              actual,
+              enumLabel,
+            ),
+          15_000,
+          this.signal,
+        );
         await this.click("option", optionLabel);
       } catch (error) {
-        if (error instanceof ConfigurationOperationError) throw error;
-        throw new Error(
-          `下拉候选点击失败：${key}/${String(target)}；${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        );
+        if (error instanceof ConfigurationOperationError && error.disposition === "stop")
+          throw error;
+        try {
+          await this.beforeInput?.();
+          const expanded = await this.builder.caseDom((document, selector) => {
+            const control = document.querySelector(selector);
+            if (!control || control.getAttribute("role") !== "combobox")
+              throw new Error("原下拉控件已失效，不能清理弹层");
+            return control.getAttribute("aria-expanded") === "true";
+          }, current.selector);
+          // Close only this still-owned dropdown; never select a substitute value or retry input.
+          if (expanded) await this.click("case-control", current.selector);
+          await waitFor(
+            "失败下拉弹层关闭",
+            () =>
+              this.builder.caseDom((document, selector) => {
+                const control = document.querySelector(selector);
+                const listId = control?.getAttribute("aria-controls");
+                const list = listId ? document.getElementById(listId) : null;
+                return control?.getAttribute("aria-expanded") === "false" &&
+                  !list?.getClientRects().length
+                  ? true
+                  : undefined;
+              }, current.selector),
+            3000,
+            this.signal,
+          );
+        } catch (cleanupError) {
+          throw new ConfigurationOperationError(
+            "context",
+            "配置下拉失败且弹层未能安全关闭，停止后续操作",
+            "stop",
+            {
+              cause: error,
+              diagnostic: {
+                phase: "enum.dismiss",
+                observations: {
+                  cleanupError:
+                    cleanupError instanceof Error ? cleanupError.message : "未知清理错误",
+                },
+              },
+            },
+          );
+        }
+        throw error;
       }
     } else {
       if (key === "buildPath" && typeof target === "string" && target.startsWith("project://")) {

@@ -3,15 +3,72 @@ import type {
   ConfigurationStepsDocument,
 } from "./configuration-steps-contract.js";
 import type { ConfigurationTarget } from "./configuration-targets.js";
+import type { CaseValue } from "./finalized-cases.js";
+import { hiddenCondition, preparationFields } from "./configuration-step-values.js";
+import { configurationFamilies } from "./configuration-operations.js";
+import { platformCatalog } from "./platform-catalog.js";
+import type { StageExpected } from "./configuration-stages.js";
+import type { InitialChecks } from "./configuration-input-actions.js";
+import { stepOperations, stepAssertions } from "./step-operation-capabilities.js";
 
 export type BuildStep =
   | { id: string; op: "config.open" }
   | { id: string; op: "config.close"; page: string }
-  | (Extract<ConfigurationStep, { op: "record" | "set" | "restore" }> & { page: string })
-  | (Extract<ConfigurationStep, { op: "read" }> & { page: string; scope?: "build" })
+  | { id: string; op: "config.ready"; page: string }
+  | { id: string; op: "config.require"; page: string; expected: InitialChecks }
+  | { id: string; op: "input.cancel-file"; page: string; field: string }
+  | { id: string; op: "input.clear-field"; page: string; field: string }
+  | { id: string; op: "input.clear-scenes"; page: string }
+  | { id: string; op: "assert"; check: "empty" | "protected-choice"; page: string; field: string }
+  | { id: string; op: "assert"; check: "build-enabled"; page: string; expected: boolean }
+  | {
+      id: string;
+      op: "assert";
+      check: "unchanged";
+      page: string;
+      snapshot: string;
+      fields: string[];
+    }
+  | { id: string; op: "stage.record"; page: string }
+  | { id: string; op: "stage.read"; page: string }
+  | {
+      id: string;
+      op: "stage.hint";
+      page: string;
+      control: "button" | "link" | "unlink";
+      stage: string;
+      contains: string;
+    }
+  | { id: string; op: "stage.link"; page: string; record: string; previous: string; stage: string }
+  | { id: string; op: "stage.unlink"; page: string; record: string; group: string; stage: string }
+  | { id: string; op: "stage.restore"; page: string; record: string; reopen?: boolean }
+  | { id: string; op: "assert"; check: "stages"; snapshot: string; expected: StageExpected }
+  | { id: string; op: "assert"; check: "build-scope"; page: string; expected: { allowed: boolean } }
+  | { id: string; op: "config.expand"; page: string; section: "network-timeout" }
+  | { id: string; op: "config.prepare"; page: string; field: string; value: CaseValue }
+  | { id: string; op: "retain"; page: string; fields: string[] }
+  | { id: string; op: "input.google-icon"; page: string; file: CaseValue }
+  | {
+      id: string;
+      op: "input.openpaas-game";
+      page: string;
+      value: CaseValue;
+      requireChange?: boolean;
+    }
+  | (Extract<ConfigurationStep, { op: "record" | "set" }> & { page: string })
+  | (Extract<ConfigurationStep, { op: "restore" }> & { page: string; reopen?: boolean })
+  | (Extract<ConfigurationStep, { op: "read" }> & {
+      page: string;
+      scope?: "build";
+      retained?: string;
+      hidden?: string[];
+    })
   | Extract<ConfigurationStep, { op: "assert" }>
   | { id: string; op: "build.submit"; page: string; snapshot: string }
   | { id: string; op: "build.wait"; task: string }
+  | { id: string; op: "assert"; check: "retained"; page: string; retained: string }
+  | { id: string; op: "assert"; check: "hidden"; page: string; field: string; observed?: string }
+  | { id: string; op: "assert"; check: "agc-material" | "openpaas-ready"; page: string }
   | {
       id: string;
       op: "assert";
@@ -83,15 +140,65 @@ export function validateBuildSteps(
     const ids = new Set<string>(),
       recorded = new Set<string>(),
       mutated = new Set<string>();
+    const retained = new Map<string, string[]>(),
+      hidden = new Map<string, { field: string; page: string; writes: number }>();
+    const writes = new Map<string, number>(),
+      checks = new Set<string>();
     const snapshots = new Map<
       string,
-      { page: string; revision: number; fields: string[]; build: boolean }
+      {
+        page: string;
+        revision: number;
+        fields: string[];
+        build: boolean;
+        writes: Map<string, number>;
+      }
     >();
     const projected: Record<string, unknown>[] = [],
       allFields = new Set<string>();
+    let stageRecord: string | undefined,
+      stagesRestored = false;
+    const stageSnapshots = new Map<string, { page: string; revision: number }>();
+    const stageId = (value: unknown, where: string) => {
+      if (!["build", "make", "run", "upload", "publish"].includes(String(value)))
+        error(where, "未适配的阶段 ID");
+    };
     const usePage = (ref: unknown, where: string) => {
       if (!active || ref !== active)
         error(where, "必须引用当前有效页面；关闭或提交后的旧页面不能复用");
+    };
+    const mutate = (fields: string[], where: string) => {
+      for (const field of fields) {
+        if (!recorded.has(field)) error(where, `操作前必须记录字段：${field}`);
+        if ([...retained.values()].some((fields) => fields.includes(field)))
+          error(where, "保留字段不能同时作为写入目标");
+        allFields.add(field);
+        mutated.add(field);
+        writes.set(field, (writes.get(field) ?? 0) + 1);
+      }
+      revision++;
+    };
+    const validateInput = (field: string, value: unknown, stepId: string) => {
+      let readId = stepId + "InputRead",
+        checkId = stepId + "InputCheck";
+      while (
+        (c.steps as Array<{ id?: string }>).some((s) => s.id === readId || s.id === checkId) ||
+        projected.some((s) => s.id === readId || s.id === checkId)
+      ) {
+        readId += "X";
+        checkId += "X";
+      }
+      allFields.add(field);
+      projected.push(
+        { id: readId, op: "read", fields: [field] },
+        {
+          id: checkId,
+          op: "assert",
+          check: "values",
+          snapshot: readId,
+          values: { [field]: value },
+        },
+      );
     };
     for (const [cleanup, sequence] of [
       [false, c.steps],
@@ -103,7 +210,9 @@ export function validateBuildSteps(
         const stepId = id(s.id, where);
         if (ids.has(stepId)) error(where, "步骤 id 重复");
         ids.add(stepId);
-        if (cleanup && !["config.open", "restore", "config.close"].includes(String(s.op)))
+        if (!Object.hasOwn(stepOperations, String(s.op))) error(where, "未支持的操作");
+        const operation = stepOperations[s.op as BuildStep["op"]];
+        if (cleanup && !("cleanup" in operation && operation.cleanup))
           error(where, "finally 只允许打开、恢复、关闭");
         const { page: _page, scope: _scope, ...projection } = s;
         switch (s.op) {
@@ -120,13 +229,203 @@ export function validateBuildSteps(
             active = undefined;
             revision++;
             break;
+          case "config.ready":
+            keys(s, ["id", "op", "page"], where);
+            usePage(s.page, where);
+            revision++;
+            break;
+          case "config.require": {
+            keys(s, ["id", "op", "page", "expected"], where);
+            usePage(s.page, where);
+            const expected = obj(s.expected, where);
+            keys(
+              expected,
+              [
+                "buildEnabled",
+                "visible",
+                "nonEmpty",
+                "noPrompt",
+                "cleanOrEmpty",
+                "differs",
+                "emptyWhen",
+              ],
+              where,
+            );
+            if (
+              !Object.keys(expected).length ||
+              (expected.buildEnabled !== undefined && typeof expected.buildEnabled !== "boolean")
+            )
+              error(where, "初态要求必须非空，按钮状态为布尔值");
+            const observeFields = (value: unknown) => {
+              if (
+                !Array.isArray(value) ||
+                !value.length ||
+                value.some((v) => typeof v !== "string") ||
+                new Set(value).size !== value.length
+              )
+                error(where, "初态字段需要非空且不重复的字段数组");
+              (value as string[]).forEach((f) => allFields.add(f));
+            };
+            for (const key of ["visible", "nonEmpty", "noPrompt", "cleanOrEmpty"])
+              if (expected[key] !== undefined) observeFields(expected[key]);
+            if (expected.differs !== undefined)
+              for (const [field, value] of Object.entries(obj(expected.differs, where)))
+                validateInput(field, value, stepId + field.replace(/\W/g, ""));
+            if (expected.emptyWhen !== undefined) {
+              if (!Array.isArray(expected.emptyWhen) || !expected.emptyWhen.length)
+                error(where, "条件初态要求必须是非空数组");
+              for (const raw of expected.emptyWhen as unknown[]) {
+                const condition = obj(raw, where);
+                keys(condition, ["field", "value", "children"], where);
+                validateInput(
+                  String(condition.field),
+                  condition.value,
+                  stepId + "Condition" + projected.length,
+                );
+                observeFields(condition.children);
+              }
+            }
+            break;
+          }
+          case "input.cancel-file":
+          case "input.clear-field": {
+            keys(s, ["id", "op", "page", "field"], where);
+            usePage(s.page, where);
+            const field = String(s.field);
+            mutate([field], where);
+            if (
+              s.op === "input.cancel-file" &&
+              !/(?:Path|PemPath|\.icon|\.customIcon|File)$/.test(field)
+            )
+              error(where, "仅注册文件路径控件的取消操作");
+            projected.push({ id: stepId, op: "read", fields: [field] });
+            break;
+          }
+          case "input.clear-scenes":
+            keys(s, ["id", "op", "page"], where);
+            usePage(s.page, where);
+            mutate(["scenes", "startScene"], where);
+            break;
+          case "stage.record":
+            keys(s, ["id", "op", "page"], where);
+            usePage(s.page, where);
+            if (stageRecord || cleanup) error(where, "每例至多一份阶段原值记录");
+            stageRecord = stepId;
+            break;
+          case "stage.read":
+            keys(s, ["id", "op", "page"], where);
+            usePage(s.page, where);
+            stageSnapshots.set(stepId, { page: active!, revision });
+            break;
+          case "stage.hint":
+            keys(s, ["id", "op", "page", "control", "stage", "contains"], where);
+            usePage(s.page, where);
+            stageId(s.stage, where);
+            if (
+              !["button", "link", "unlink"].includes(String(s.control)) ||
+              typeof s.contains !== "string" ||
+              !s.contains.trim()
+            )
+              error(where, "提示观察需要控件类型、阶段及非空预期文本");
+            break;
+          case "stage.link":
+          case "stage.unlink":
+            keys(
+              s,
+              ["id", "op", "page", "record", s.op === "stage.link" ? "previous" : "group", "stage"],
+              where,
+            );
+            usePage(s.page, where);
+            if (!stageRecord || s.record !== stageRecord)
+              error(where, "修改前须引用本例阶段原值记录");
+            stageId(s.stage, where);
+            stageId(s.op === "stage.link" ? s.previous : s.group, where);
+            if (s.stage === "build") error(where, "构建只能作为组首，不能作为连接或拆分目标");
+            revision++;
+            break;
+          case "stage.restore":
+            keys(s, ["id", "op", "page", "record", "reopen"], where);
+            usePage(s.page, where);
+            if (
+              !cleanup ||
+              !stageRecord ||
+              s.record !== stageRecord ||
+              stagesRestored ||
+              (s.reopen !== undefined && typeof s.reopen !== "boolean")
+            )
+              error(where, "阶段恢复须在 finally 唯一引用本例记录，reopen 为布尔值");
+            stagesRestored = true;
+            revision++;
+            break;
+          case "config.expand":
+            keys(s, ["id", "op", "page", "section"], where);
+            usePage(s.page, where);
+            if (s.section !== "network-timeout" || c.platform !== "openpaas")
+              error(where, "仅注册 OpenPaaS 网络超时分组");
+            revision++;
+            break;
+          case "config.prepare": {
+            keys(s, ["id", "op", "page", "field", "value"], where);
+            usePage(s.page, where);
+            const fields = preparationFields(String(s.field), s.value as CaseValue);
+            if (!fields) error(where, "此字段未注册联动准备");
+            mutate(fields!, where);
+            validateInput(String(s.field), s.value, stepId);
+            break;
+          }
+          case "retain":
+            keys(s, ["id", "op", "page", "fields"], where);
+            usePage(s.page, where);
+            if (
+              !Array.isArray(s.fields) ||
+              !s.fields.length ||
+              (s.fields as string[]).some((f) => mutated.has(f))
+            )
+              error(where, "保留值需在该字段被修改前观察");
+            retained.set(stepId, s.fields as string[]);
+            for (const field of s.fields as string[]) allFields.add(field);
+            projected.push({ id: stepId, op: "read", fields: s.fields });
+            break;
+          case "input.google-icon":
+            keys(s, ["id", "op", "page", "file"], where);
+            usePage(s.page, where);
+            if (c.platform !== "google-play") error(where, "图标操作只适用 Google Play");
+            mutate(
+              ["packages.google-play.customIcon", "packages.google-play.customIconFile"],
+              where,
+            );
+            validateInput("packages.google-play.customIcon", s.file, stepId);
+            break;
+          case "input.openpaas-game":
+            keys(s, ["id", "op", "page", "value", "requireChange"], where);
+            usePage(s.page, where);
+            if (
+              c.platform !== "openpaas" ||
+              (s.requireChange !== undefined && typeof s.requireChange !== "boolean")
+            )
+              error(where, "已有游戏操作仅适用 OpenPaaS，requireChange 须为布尔值");
+            mutate(["packages.openpaas.appid"], where);
+            validateInput("packages.openpaas.appid", s.value, stepId);
+            break;
           case "record":
             keys(s, ["id", "op", "page", "fields"], where);
             usePage(s.page, where);
-            if (record || !Array.isArray(s.fields) || !s.fields.length)
+            if (
+              record ||
+              !Array.isArray(s.fields) ||
+              !s.fields.length ||
+              s.fields.some((field) => typeof field !== "string") ||
+              new Set(s.fields).size !== s.fields.length
+            )
               error(where, "每例需要至多一份非空原值记录");
             record = stepId;
-            for (const f of s.fields as string[]) {
+            for (const f of [
+              ...(s.fields as string[]),
+              ...configurationFamilies(s.fields as string[]).flatMap((family) => [
+                family.parent,
+                ...family.children,
+              ]),
+            ]) {
               recorded.add(f);
               allFields.add(f);
             }
@@ -134,14 +433,11 @@ export function validateBuildSteps(
           case "set":
             keys(s, ["id", "op", "page", "field", "value", "input"], where);
             usePage(s.page, where);
-            if (!recorded.has(String(s.field))) error(where, "修改字段必须显式记录原值");
-            mutated.add(String(s.field));
-            allFields.add(String(s.field));
-            revision++;
+            mutate([String(s.field)], where);
             projected.push(projection);
             break;
           case "read":
-            keys(s, ["id", "op", "page", "fields", "scope"], where);
+            keys(s, ["id", "op", "page", "fields", "scope", "retained", "hidden"], where);
             usePage(s.page, where);
             if (
               !Array.isArray(s.fields) ||
@@ -149,9 +445,32 @@ export function validateBuildSteps(
               (s.scope !== undefined && s.scope !== "build")
             )
               error(where, "回读需要字段和有效 scope");
+            if ((s.retained !== undefined || s.hidden !== undefined) && s.scope !== "build")
+              error(where, "保留值与隐藏证据只附加到构建快照");
+            if (s.retained !== undefined && !retained.has(String(s.retained)))
+              error(where, "保留值引用无效");
+            if (
+              s.hidden !== undefined &&
+              (!Array.isArray(s.hidden) || new Set(s.hidden).size !== s.hidden.length)
+            )
+              error(where, "hidden 须为不重复的断言引用");
+            const hiddenFields = ((s.hidden as string[] | undefined) ?? []).map((ref) => {
+              const value = hidden.get(ref);
+              if (
+                !value ||
+                value.page !== active ||
+                value.writes !== (writes.get(value.field) ?? 0)
+              )
+                error(where, "隐藏证据无效或已被再次修改");
+              return value!.field;
+            });
+            if (new Set(hiddenFields).size !== hiddenFields.length)
+              error(where, "每个隐藏字段只能附加一份观察");
             if (
               s.scope === "build" &&
-              [...mutated].some((f) => !(s.fields as unknown[]).includes(f))
+              [...mutated].some(
+                (f) => !(s.fields as unknown[]).includes(f) && !hiddenFields.includes(f),
+              )
             )
               error(where, "提交快照必须包括本例所有已修改字段");
             snapshots.set(stepId, {
@@ -159,12 +478,103 @@ export function validateBuildSteps(
               revision,
               fields: s.fields as string[],
               build: s.scope === "build",
+              writes: new Map(writes),
             });
             (s.fields as string[]).forEach((f) => allFields.add(f));
-            projected.push(projection);
+            projected.push({ id: stepId, op: "read", fields: s.fields });
             break;
           case "assert":
-            if (s.check === "build-result") {
+            if (!Object.hasOwn(stepAssertions, String(s.check))) error(where, "未支持的断言");
+            if (s.check === "empty" || s.check === "protected-choice") {
+              keys(s, ["id", "op", "check", "page", "field"], where);
+              usePage(s.page, where);
+              allFields.add(String(s.field));
+            } else if (s.check === "build-enabled") {
+              keys(s, ["id", "op", "check", "page", "expected"], where);
+              usePage(s.page, where);
+              if (typeof s.expected !== "boolean") error(where, "按钮状态预期须为布尔值");
+            } else if (s.check === "unchanged") {
+              keys(s, ["id", "op", "check", "page", "snapshot", "fields"], where);
+              usePage(s.page, where);
+              const baseline = snapshots.get(String(s.snapshot));
+              if (
+                !baseline ||
+                !Array.isArray(s.fields) ||
+                !s.fields.length ||
+                s.fields.some((f) => !baseline.fields.includes(String(f)))
+              )
+                error(where, "保留比较须引用本例已经观察的字段");
+            } else if (s.check === "stages") {
+              keys(s, ["id", "op", "check", "snapshot", "expected"], where);
+              const snap = stageSnapshots.get(String(s.snapshot));
+              if (!snap || snap.page !== active || snap.revision !== revision)
+                error(where, "阶段断言须引用当前页未过期的阶段快照");
+              const expected = obj(s.expected, where);
+              keys(expected, ["groups", "visible", "disabled", "linkDisabled"], where);
+              if (!Array.isArray(expected.groups) || !expected.groups.length)
+                error(where, "阶段断言需要完整有序分组");
+              const seen = new Set<string>();
+              for (const g of expected.groups as unknown[]) {
+                if (!Array.isArray(g) || !g.length) error(where, "阶段组不能为空");
+                for (const stage of g as unknown[]) {
+                  stageId(stage, where);
+                  if (seen.has(String(stage))) error(where, "预期阶段不得重复");
+                  seen.add(String(stage));
+                }
+              }
+              if ((expected.groups as string[][])[0][0] !== "build")
+                error(where, "首组须以 build 开头");
+              if (expected.visible !== undefined) {
+                if (
+                  !Array.isArray(expected.visible) ||
+                  expected.visible.length !== seen.size ||
+                  new Set(expected.visible).size !== seen.size
+                )
+                  error(where, "可见阶段应与分组中的阶段集合一致");
+                for (const stage of expected.visible as unknown[])
+                  if (!seen.has(String(stage))) error(where, "可见阶段不属于预期分组");
+              }
+              for (const key of ["disabled", "linkDisabled"])
+                if (expected[key] !== undefined)
+                  for (const [stage, flag] of Object.entries(obj(expected[key], where)))
+                    if (!seen.has(stage) || typeof flag !== "boolean")
+                      error(where, "阶段状态须引用可见阶段并使用布尔值");
+            } else if (s.check === "build-scope") {
+              keys(s, ["id", "op", "check", "page", "expected"], where);
+              usePage(s.page, where);
+              const expected = obj(s.expected, where);
+              keys(expected, ["allowed"], where);
+              if (typeof expected.allowed !== "boolean") error(where, "构建范围预期须为布尔值");
+            } else if (s.check === "retained") {
+              keys(s, ["id", "op", "check", "page", "retained"], where);
+              usePage(s.page, where);
+              if (!retained.has(String(s.retained))) error(where, "必须引用已观察的保留值");
+            } else if (s.check === "hidden") {
+              keys(s, ["id", "op", "check", "page", "field", "observed"], where);
+              usePage(s.page, where);
+              const field = String(s.field),
+                condition = hiddenCondition(field),
+                observed = snapshots.get(String(s.observed));
+              if (!condition) error(where, "字段未注册隐藏条件");
+              if (
+                s.observed !== undefined
+                  ? !observed ||
+                    observed.page !== active ||
+                    !observed.fields.includes(field) ||
+                    (observed.writes.get(field) ?? 0) !== (writes.get(field) ?? 0)
+                  : field !== "wasmCompressionMode"
+              )
+                error(where, "隐藏子项须引用本页未再写入的观察；仅 Asmjs 压缩可使用父项推导 false");
+              allFields.add(field);
+              allFields.add(condition!.field);
+              hidden.set(stepId, { field, page: active!, writes: writes.get(field) ?? 0 });
+            } else if (s.check === "agc-material" || s.check === "openpaas-ready") {
+              keys(s, ["id", "op", "check", "page"], where);
+              usePage(s.page, where);
+              if (c.platform !== (s.check === "agc-material" ? "huawei-agc" : "openpaas"))
+                error(where, "专属检查与平台不符");
+              checks.add(s.check);
+            } else if (s.check === "build-result") {
               keys(s, ["id", "op", "check", "task", "result", "expected"], where);
               const expected = obj(s.expected, where);
               keys(expected, ["state"], where);
@@ -199,6 +609,10 @@ export function validateBuildSteps(
             const snap = snapshots.get(String(s.snapshot));
             if (submitted || !snap?.build || snap.page !== active || snap.revision !== revision)
               error(where, "每例最多一次提交，且须引用当前页面的构建快照");
+            if (c.platform === "huawei-agc" && !checks.has("agc-material"))
+              error(where, "AGC 提交前必须检查服务文件及包名");
+            if (c.platform === "openpaas" && !checks.has("openpaas-ready"))
+              error(where, "OpenPaaS 提交前必须核对必填项及已有游戏");
             submitted = stepId;
             active = undefined;
             revision++;
@@ -211,10 +625,14 @@ export function validateBuildSteps(
             waited = stepId;
             break;
           case "restore":
-            keys(s, ["id", "op", "page", "record"], where);
+            keys(s, ["id", "op", "page", "record", "reopen"], where);
             usePage(s.page, where);
             if (!cleanup || !record || s.record !== record || restored)
               error(where, "恢复必须在 finally 中唯一引用本例原值记录");
+            if (stageRecord && !stagesRestored)
+              error(where, "应先恢复阶段关系，再核对原字段和按钮状态");
+            if (s.reopen !== undefined && typeof s.reopen !== "boolean")
+              error(where, "reopen 必须为布尔值");
             restored = true;
             break;
           default:
@@ -224,10 +642,16 @@ export function validateBuildSteps(
     }
     if (active) error(at, "结束时必须关闭配置页");
     if (record && !restored) error(at, "原值记录必须有 finally 恢复");
+    if (stageRecord && !stagesRestored) error(at, "阶段原值记录必须有 finally 恢复");
+    if (
+      (mutated.has("startScene") || mutated.has("scenes")) &&
+      (!recorded.has("startScene") || !recorded.has("scenes"))
+    )
+      error(at, "场景操作必须同时记录初始场景和场景集合，保证联动恢复");
     if ([...snapshots.values()].some((s) => s.build) && !submitted)
       error(at, "构建快照需要对应的提交步骤");
-    if (submitted && !["web-desktop", "web-mobile"].includes(String(c.platform)))
-      error(at, "首批 v2 构建仅开放两个 Web 平台；专用材料和平台合同仍走旧入口");
+    if (submitted && !platformCatalog.some((p) => p.id === c.platform))
+      error(at, "新标准平台尚无构建合同，仅支持配置操作");
     if (submitted && (!waited || !checked)) error(at, "提交后必须声明等待和结果断言");
     let prefix = "projection";
     while (ids.has(prefix) || ids.has(prefix + "End")) prefix += "X";
@@ -260,7 +684,23 @@ export function buildStepDependencies(c: BuildStepCase) {
       ...("snapshot" in s ? [s.snapshot] : []),
       ...("task" in s ? [s.task] : []),
       ...("result" in s ? [s.result] : []),
-      ...(s.op === "restore" ? [s.record] : s.op === "set" && record ? [record.id] : []),
+      ...("retained" in s && s.retained ? [s.retained] : []),
+      ...("hidden" in s ? (s.hidden ?? []) : []),
+      ...("observed" in s && s.observed ? [s.observed] : []),
+      ...("record" in s ? [s.record] : []),
+      ...(s.op === "restore"
+        ? []
+        : [
+              "set",
+              "config.prepare",
+              "input.google-icon",
+              "input.openpaas-game",
+              "input.cancel-file",
+              "input.clear-field",
+              "input.clear-scenes",
+            ].includes(s.op) && record
+          ? [record.id]
+          : []),
       ...(s.op === "assert" && (s.check === "prompt" || s.check === "state") && active
         ? [active]
         : []),

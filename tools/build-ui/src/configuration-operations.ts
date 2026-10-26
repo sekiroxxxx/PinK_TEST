@@ -2,9 +2,12 @@ import { isDeepStrictEqual } from "node:util";
 import type { CaseControl } from "./case-form.js";
 import type { CaseValue } from "./finalized-cases.js";
 import { ConfigurationContext, ConfigurationOperationError } from "./configuration-context.js";
+import type { FormView } from "./configuration-page.js";
+import { assertOpenpaasBuildReady, type OpenpaasPageState } from "./openpaas.js";
+import { ConfigurationStages, type StagePort } from "./configuration-stages.js";
 
 /** Existing UI adapters implement this port; it deliberately has no build or task mutation. */
-export interface ConfigurationPort {
+export interface ConfigurationPort extends Partial<StagePort> {
   inspect(field: string): Promise<CaseControl | null>;
   read(field: string): Promise<CaseControl>;
   set(field: string, value: CaseValue, input?: string, enumLabel?: string): Promise<boolean>;
@@ -14,11 +17,17 @@ export interface ConfigurationPort {
   reopen(): Promise<void>;
   cancelFileChoice(field: string): Promise<void>;
   clearAllScenes?(): Promise<void>;
+  ready?(): Promise<void>;
+  expandSection?(label: string): Promise<void>;
+  googleIcon?(file: string): Promise<void>;
+  openpaasPage?(): Promise<OpenpaasPageState>;
+  selectOpenpaasGame?(id: string): Promise<void>;
+  configurationPage?(): Promise<FormView>;
 }
 
 export interface ConfigurationFamily {
   parent: string;
-  enabled: boolean;
+  enabled: CaseValue;
   children: string[];
 }
 export interface ConfigurationAssertion {
@@ -63,6 +72,12 @@ export function configurationFamilies(fields: string[]): ConfigurationFamily[] {
       },
       { parent: "md5Cache", enabled: true, children: ["md5CacheOptions.handleTemplateMd5Link"] },
       { parent: "binGroupConfig.enable", enabled: true, children: ["binGroupConfig.threshold"] },
+      {
+        parent: "packages.google-play.customIcon",
+        enabled: "custom",
+        children: ["packages.google-play.customIconFile"],
+      },
+      { parent: "nativeCodeBundleMode", enabled: "wasm", children: ["wasmCompressionMode"] },
     ];
     for (const family of candidates)
       if (family.parent === field || family.children.includes(field))
@@ -102,12 +117,19 @@ export interface ConfigurationRecord {
 /** Independently callable operations over a verified modal, without a case/profile dependency. */
 export class ConfigurationOperations implements ConfigurationPort {
   private readonly records = new Set<ConfigurationRecord>();
+  readonly stages: ConfigurationStages;
 
   constructor(
     protected contextValue: ConfigurationContext,
     protected readonly port: ConfigurationPort,
     private readonly rebind: () => Promise<ConfigurationContext>,
-  ) {}
+  ) {
+    this.stages = new ConfigurationStages(
+      () => this.context,
+      port,
+      (action) => this.mutate(action, false, false),
+    );
+  }
 
   get context(): ConfigurationContext {
     return this.contextValue;
@@ -146,6 +168,73 @@ export class ConfigurationOperations implements ConfigurationPort {
     const control = await this.port.inspect(field);
     await this.context.verify();
     return control && structuredClone(control);
+  }
+
+  async ready(): Promise<void> {
+    if (!this.port.ready)
+      throw new ConfigurationOperationError("precondition", "缺少配置联动就绪适配", "blocked");
+    await this.context.verify();
+    await this.port.ready();
+    await this.context.verify();
+  }
+
+  async expandSection(label: string): Promise<void> {
+    if (!this.port.expandSection)
+      throw new ConfigurationOperationError("precondition", "缺少配置分组展开适配", "blocked");
+    await this.context.verify();
+    await this.port.expandSection(label);
+    await this.context.verify();
+  }
+
+  async googleIcon(file: string): Promise<void> {
+    if (this.platform !== "google-play" || !this.port.googleIcon)
+      throw new ConfigurationOperationError(
+        "precondition",
+        "Google 图标操作缺少对应平台适配",
+        "blocked",
+      );
+    // Capture the exposed original file before the existing adapter replaces it.
+    await this.set("packages.google-play.customIcon", "custom");
+    await this.mutate(() => this.port.googleIcon!(file));
+  }
+
+  async openpaasPage(): Promise<OpenpaasPageState> {
+    if (this.platform !== "openpaas" || !this.port.openpaasPage)
+      throw new ConfigurationOperationError(
+        "precondition",
+        "缺少 OpenPaaS 已有游戏观察适配",
+        "blocked",
+      );
+    await this.context.verify();
+    const result = await this.port.openpaasPage();
+    await this.context.verify();
+    return result;
+  }
+
+  async selectOpenpaasGame(id: string): Promise<void> {
+    if (this.platform !== "openpaas" || !this.port.selectOpenpaasGame)
+      throw new ConfigurationOperationError(
+        "precondition",
+        "缺少 OpenPaaS 已有游戏选择适配",
+        "blocked",
+      );
+    await this.mutate(() => this.port.selectOpenpaasGame!(id));
+  }
+
+  async assertOpenpaasReady() {
+    if (!this.port.configurationPage)
+      throw new ConfigurationOperationError(
+        "precondition",
+        "缺少 OpenPaaS 必填项页面观察",
+        "blocked",
+      );
+    await this.context.verify();
+    const result = assertOpenpaasBuildReady(
+      await this.port.configurationPage(),
+      await this.openpaasPage(),
+    );
+    await this.context.verify();
+    return result;
   }
 
   async read(field: string): Promise<CaseControl> {
@@ -301,12 +390,16 @@ export class ConfigurationOperations implements ConfigurationPort {
   }
 
   /** Runs one existing UI mutation. An attempted write invalidates snapshots even if it throws. */
-  protected async mutate<T>(action: () => Promise<T>, rebindAfter = false): Promise<T> {
-    for (const record of this.records) await this.captureExposed(record);
+  protected async mutate<T>(
+    action: () => Promise<T>,
+    rebindAfter = false,
+    tracksFields = true,
+  ): Promise<T> {
+    if (tracksFields) for (const record of this.records) await this.captureExposed(record);
     const context = this.context;
     await context.verify();
     context.beginMutation();
-    for (const record of this.records) record.mutated = true;
+    if (tracksFields) for (const record of this.records) record.mutated = true;
     let result: T;
     try {
       result = await action();
@@ -315,7 +408,7 @@ export class ConfigurationOperations implements ConfigurationPort {
     }
     if (rebindAfter) this.contextValue = await this.rebind();
     await this.context.verify();
-    for (const record of this.records) await this.captureExposed(record);
+    if (tracksFields) for (const record of this.records) await this.captureExposed(record);
     return result;
   }
 
@@ -399,6 +492,68 @@ export class ConfigurationOperations implements ConfigurationPort {
       await stage("verify-context", undefined, () => this.context.verify());
       this.records.delete(record);
       const restored = new Set<string>();
+      // A changed physics/preset can expose native controls that the original preset hides.
+      // Restore those observed values while they are still reachable, before switching back.
+      const native = ["nativeCodeBundleMode", "wasmCompressionMode"];
+      if (
+        record.mutated &&
+        native.some((key) => record.initial.get(key) === null && record.restore.has(key))
+      ) {
+        if (
+          record.restore.has("wasmCompressionMode") &&
+          record.initial.get("wasmCompressionMode") === null
+        ) {
+          await stage("expose-native-before-preset", "nativeCodeBundleMode", () =>
+            this.set("nativeCodeBundleMode", "wasm"),
+          );
+          await this.ready();
+          await restoreField("wasmCompressionMode");
+          restored.add("wasmCompressionMode");
+        }
+        if (
+          record.restore.has("nativeCodeBundleMode") &&
+          record.initial.get("nativeCodeBundleMode") === null
+        ) {
+          await restoreField("nativeCodeBundleMode");
+          restored.add("nativeCodeBundleMode");
+        }
+      }
+      if (record.mutated && record.restore.has("engineModulesConfigKey")) {
+        const presetFields = [
+          "engineModulesConfigKey",
+          "overwriteProjectSettings.includeModules.physics",
+          "overwriteProjectSettings.includeModules.physics-2d",
+          "overwriteProjectSettings.includeModules.gfx-webgl2",
+          "overwriteProjectSettings.macroConfig.cleanupImageCache",
+        ];
+        for (const key of presetFields.slice(1))
+          if (record.initial.get(key) === null && record.restore.has(key)) {
+            await restoreField(key);
+            await this.ready();
+            restored.add(key);
+          }
+        for (const key of presetFields)
+          if (record.restore.has(key) && !restored.has(key)) {
+            await restoreField(key);
+            await this.ready();
+            restored.add(key);
+          }
+      }
+      const restoreDebugLast =
+        record.mutated &&
+        record.restore.has("debug") &&
+        record.families.some(
+          (family) =>
+            family.parent.endsWith(".encrypted") &&
+            family.children.some((field) => record.restore.has(field)),
+        );
+      if (restoreDebugLast)
+        await stage("unlock-encryption", "debug", () => this.set("debug", false));
+      // The current initial scene is mandatory in the scene selection UI. Restore it first.
+      if (record.mutated && record.restore.has("startScene")) {
+        await restoreField("startScene");
+        restored.add("startScene");
+      }
       if (record.mutated && record.restore.has("mainBundleCompressionType")) {
         for (const field of ["mainBundleCompressionType", "mainBundleIsRemote"])
           if (record.restore.has(field)) {
@@ -407,8 +562,10 @@ export class ConfigurationOperations implements ConfigurationPort {
           }
       }
       for (const family of record.mutated ? record.families : []) {
-        if (!record.restore.has(family.parent)) continue;
-        const children = family.children.filter((field) => record.restore.has(field));
+        if (!record.restore.has(family.parent) || restored.has(family.parent)) continue;
+        const children = family.children.filter(
+          (field) => record.restore.has(field) && !restored.has(field),
+        );
         if (!children.length) continue;
         await stage("enable-parent", family.parent, () => this.set(family.parent, family.enabled));
         for (const child of children) {
@@ -424,7 +581,8 @@ export class ConfigurationOperations implements ConfigurationPort {
         }
       }
       for (const key of record.mutated ? [...record.restore.keys()].reverse() : [])
-        if (!restored.has(key)) await restoreField(key);
+        if (!restored.has(key) && (!restoreDebugLast || key !== "debug")) await restoreField(key);
+      if (restoreDebugLast) await restoreField("debug");
       if (record.mutated && reopen) await stage("reopen", undefined, () => this.reopen());
       for (const [key, original] of record.initial) {
         field = key;

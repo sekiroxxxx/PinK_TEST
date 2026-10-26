@@ -152,11 +152,15 @@
               "$material": "ohos.publish.apiLevel"
             },
             "packages.ohos.encrypted": true,
-            "packages.ohos.xxteaKey": "0123456789abcdef",
+            "packages.ohos.xxteaKey": {
+              "$material": "nativeEncryption.key"
+            },
             "packages.ohos.compressZip": false,
             "packages.ohos.JobSystem": "taskFlow"
           },
-          "materials": [],
+          "materials": [
+            "私有材料绑定 nativeEncryption.key：非生产脚本加密测试密钥"
+          ],
           "notes": [
             "调试组/混合组若需要先关闭加密，应在非调试态完成，再打开调试；不向被禁用的控件写值。密钥仅在加密开启后填写。",
             "未指定目标的字段只回读并保持，不记作选项变化覆盖；保存重开只在公共 UI 专项执行。",
@@ -170,7 +174,7 @@
               },
               "covers": "加密开启时 Zip false/true；关闭加密后子项消失且压缩复位",
               "requires": "",
-              "note": "密钥仍用本例固定非生产值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
+              "note": "密钥沿用私有材料清单 nativeEncryption.key 的非生产测试值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
               "coverageState": "specified",
               "expectation": "回读列明 UI 目标；最终任务参数应与已确认字段合同一致。",
               "initialCondition": "需要观察真实变化时记录相应父项/子项初态；初态不满足不能将同值回读计作变化通过。"
@@ -1090,7 +1094,9 @@
             "packages.harmonyos-next.orientation.landscapeLeft": false,
             "packages.harmonyos-next.orientation.landscapeRight": false,
             "packages.harmonyos-next.encrypted": true,
-            "packages.harmonyos-next.xxteaKey": "0123456789abcdef",
+            "packages.harmonyos-next.xxteaKey": {
+              "$material": "nativeEncryption.key"
+            },
             "packages.harmonyos-next.compressZip": false,
             "packages.harmonyos-next.JobSystem": "taskFlow",
             "packages.harmonyos-next.jsEngine": "JSVM",
@@ -1105,7 +1111,9 @@
             "packages.harmonyos-next.deviceTypes.car": false,
             "packages.harmonyos-next.deviceTypes.default": false
           },
-          "materials": [],
+          "materials": [
+            "私有材料绑定 nativeEncryption.key：非生产脚本加密测试密钥"
+          ],
           "notes": [
             "调试组/混合组若需要先关闭加密，应在非调试态完成，再打开调试；不向被禁用的控件写值。密钥仅在加密开启后填写。",
             "未指定目标的字段只回读并保持，不记作选项变化覆盖；保存重开只在公共 UI 专项执行。",
@@ -1119,7 +1127,7 @@
               },
               "covers": "加密开启时 Zip false/true；关闭加密后子项消失且压缩复位",
               "requires": "",
-              "note": "密钥仍用本例固定非生产值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
+              "note": "密钥沿用私有材料清单 nativeEncryption.key 的非生产测试值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
               "coverageState": "specified",
               "expectation": "回读列明 UI 目标；最终任务参数应与已确认字段合同一致。",
               "initialCondition": "需要观察真实变化时记录相应父项/子项初态；初态不满足不能将同值回读计作变化通过。"
@@ -3389,7 +3397,9 @@
             "packages.android.androidInstant": true,
             "packages.android.appABIs": ["arm64-v8a"],
             "packages.android.encrypted": true,
-            "packages.android.xxteaKey": "0123456789abcdef",
+            "packages.android.xxteaKey": {
+              "$material": "nativeEncryption.key"
+            },
             "packages.android.compressZip": false,
             "packages.android.JobSystem": "taskFlow",
             "packages.android.keystorePath": {
@@ -3405,7 +3415,9 @@
               "$material": "androidSigning.aliasPassword"
             }
           },
-          "materials": [],
+          "materials": [
+            "私有材料绑定 nativeEncryption.key：非生产脚本加密测试密钥"
+          ],
           "notes": [
             "API 只从本机实际候选选择，记录显示值与任务值映射；候选不足只阻塞切换分支，不能伪造 SDK/API 值。",
             "调试组/混合组若需要先关闭加密，应在非调试态完成，再打开调试；不向被禁用的控件写值。密钥仅在加密开启后填写。",
@@ -3420,7 +3432,7 @@
               },
               "covers": "加密开启时 Zip false/true；关闭加密后子项消失且压缩复位",
               "requires": "",
-              "note": "密钥仍用本例固定非生产值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
+              "note": "密钥沿用私有材料清单 nativeEncryption.key 的非生产测试值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
               "coverageState": "specified",
               "expectation": "回读列明 UI 目标；最终任务参数应与已确认字段合同一致。",
               "initialCondition": "需要观察真实变化时记录相应父项/子项初态；初态不满足不能将同值回读计作变化通过。"
@@ -6265,7 +6277,9 @@
             "packages.windows.renderBackEnd.gles2": false,
             "packages.windows.renderBackEnd.vulkan": false,
             "packages.windows.encrypted": true,
-            "packages.windows.xxteaKey": "0123456789abcdef",
+            "packages.windows.xxteaKey": {
+              "$material": "nativeEncryption.key"
+            },
             "packages.windows.compressZip": false,
             "packages.windows.JobSystem": "taskFlow",
             "packages.windows.executableName": "qaui_build",
@@ -6274,7 +6288,9 @@
               "$material": "windows.publish.vsData"
             }
           },
-          "materials": [],
+          "materials": [
+            "私有材料绑定 nativeEncryption.key：非生产脚本加密测试密钥"
+          ],
           "notes": [
             "调试组/混合组若需要先关闭加密，应在非调试态完成，再打开调试；不向被禁用的控件写值。密钥仅在加密开启后填写。",
             "未指定目标的字段只回读并保持，不记作选项变化覆盖；保存重开只在公共 UI 专项执行。",
@@ -6288,7 +6304,7 @@
               },
               "covers": "加密开启时 Zip false/true；关闭加密后子项消失且压缩复位",
               "requires": "",
-              "note": "密钥仍用本例固定非生产值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
+              "note": "密钥沿用私有材料清单 nativeEncryption.key 的非生产测试值；关闭侧归入调试组合前的配置联动，不另建公共组合。",
               "coverageState": "specified",
               "expectation": "回读列明 UI 目标；最终任务参数应与已确认字段合同一致。",
               "initialCondition": "需要观察真实变化时记录相应父项/子项初态；初态不满足不能将同值回读计作变化通过。"

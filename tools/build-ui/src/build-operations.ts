@@ -17,17 +17,17 @@ export async function submitBuild(input: {
   outputName: string;
   verify(): Promise<void>;
   click(): Promise<number>;
-  onAttempt(at: number): void;
+  onAttempt(at: number): void | Promise<void>;
   signal: AbortSignal;
   associationTimeoutMs?: number;
 }) {
   await input.verify();
   input.source.assertHealthy();
   let submittedAt = Date.now();
-  input.onAttempt(submittedAt);
+  await input.onAttempt(submittedAt);
   try {
     submittedAt = await input.click();
-    input.onAttempt(submittedAt);
+    await input.onAttempt(submittedAt);
     const task = await waitFor(
       "本次唯一新任务",
       async () => {

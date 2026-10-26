@@ -8,6 +8,7 @@ import { createStepBuildPort } from "./build-steps-runtime.js";
 import { ExecutionContext } from "./configuration-context.js";
 import { ConfigurationOperations, type ConfigurationPort } from "./configuration-operations.js";
 import type { CaseValue } from "./finalized-cases.js";
+import { waitFor, type Task } from "./common.js";
 
 test("runtime adapter captures mandatory UI identity and resolves real scene metadata without launching PinK", async () => {
   const project = await mkdtemp(join(tmpdir(), "pink-step-capture-"));
@@ -52,6 +53,7 @@ test("runtime adapter captures mandatory UI identity and resolves real scene met
     let observedKeys: string[] = [];
     // These are external page observations. The capture, scene lookup and snapshot verification are real.
     const builder = {
+      caseDom: async () => ({ groups: [["build"]] }),
       installProbe: async (_a: unknown, _b: unknown, keys: string[]) => {
         observedKeys = keys;
       },
@@ -92,6 +94,118 @@ test("runtime adapter captures mandatory UI identity and resolves real scene met
     await assert.rejects(
       runtime.port.capture(operations, ["packages.web-mobile.orientation"]),
       /当前工程资源/,
+    );
+    builder.caseDom = async () => ({ groups: [["build", "run"]] }) as never;
+    await assert.rejects(runtime.port.capture(operations, ["name"]), /仅构建用例不能提交显式串联/);
+  } finally {
+    await runtime?.stop();
+    assert.equal(dirname(project), tmpdir());
+    await rm(project, { recursive: true });
+  }
+});
+
+test("cross-category runtime establishes one baseline and routes clicks/cards without recreating observers", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pink-step-categories-"));
+  let runtime: Awaited<ReturnType<typeof createStepBuildPort>> | undefined;
+  try {
+    await mkdir(join(project, "assets"));
+    const identity = { executable: "offline.exe", project, windowId: 1 };
+    const session = new ExecutionContext(identity, async () => identity);
+    const events: string[] = [];
+    const historical: Task = { id: "old", platform: "web-desktop", state: "success", progress: 1 };
+    let latest = { at: 1, tasks: [historical] };
+    const binding = (category: string, platform: string) => ({
+      platforms: [platform],
+      activate: async () => {
+        events.push(`activate:${category}`);
+      },
+      builder: {
+        caseDom: async () => ({ groups: [["build"]] }),
+        installProbe: async () => {
+          events.push(`probe:${category}`);
+        },
+        baseline: async () => {
+          events.push(`baseline:${category}`);
+          return [historical];
+        },
+        latestSnapshot: async () => latest,
+        click: async (
+          _a: unknown,
+          _b: unknown,
+          _c: unknown,
+          _d: unknown,
+          verify: () => Promise<void>,
+        ) => {
+          await verify();
+          events.push(`click:${category}`);
+          return Date.now();
+        },
+        revealTask: async (task: Task) => {
+          events.push(`card:${category}:${task.id}`);
+        },
+        successText: async () => true,
+      } as unknown as Builder,
+    });
+    const device = binding("X-Device", "web-desktop"),
+      application = binding("X-Application", "wechatgame");
+    runtime = await createStepBuildPort(
+      [device, application],
+      session,
+      project,
+      ["name"],
+      new AbortController().signal,
+    );
+    assert.deepEqual(events, [
+      "activate:X-Device",
+      "probe:X-Device",
+      "baseline:X-Device",
+      "activate:X-Application",
+      "probe:X-Application",
+      "baseline:X-Application",
+    ]);
+    assert.deepEqual([...runtime.port.baselineIds], ["old"]);
+    const task = { ...historical, id: "new", platform: "wechatgame", outputName: "wechat" };
+    latest = { at: 2, tasks: [historical, task] };
+    await waitFor(
+      "跨分类任务观察",
+      async () => runtime!.port.source.get("new"),
+      1000,
+      runtime.port.signal,
+    );
+    await runtime.port.click({ platform: "wechatgame" } as ConfigurationOperations, () =>
+      session.verify(),
+    );
+    await runtime.port.assertCard(task);
+    assert.deepEqual(events.slice(-3), [
+      "click:X-Application",
+      "activate:X-Application",
+      "card:X-Application:new",
+    ]);
+    assert.equal(events.filter((e) => e.startsWith("baseline:")).length, 2);
+    application.builder.caseDom = async () => ({ groups: [["build", "run"]] }) as never;
+    const clicksBefore = events.filter((e) => e.startsWith("click:")).length;
+    await assert.rejects(
+      runtime.port.click({ platform: "wechatgame" } as ConfigurationOperations, async () => {}),
+      /仅构建用例不能提交显式串联/,
+    );
+    assert.equal(events.filter((e) => e.startsWith("click:")).length, clicksBefore);
+    await assert.rejects(
+      async () =>
+        runtime!.port.click({ platform: "unbound" } as ConfigurationOperations, async () => {}),
+      /缺少构建分类/,
+    );
+    await runtime.stop();
+    runtime = undefined;
+    application.builder.baseline = async () => [];
+    await assert.rejects(
+      createStepBuildPort(
+        [device, application],
+        session,
+        project,
+        [],
+        new AbortController().signal,
+      ),
+      /完整任务基线不一致/,
     );
   } finally {
     await runtime?.stop();

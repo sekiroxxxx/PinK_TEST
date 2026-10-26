@@ -1,5 +1,6 @@
 import type { Page } from "playwright-core";
 import { Cdp } from "./cdp.js";
+import { randomUUID } from "node:crypto";
 import { readHistory, type HistoryView } from "./history-page.js";
 import { readForm, type FormView } from "./configuration-page.js";
 import {
@@ -19,10 +20,12 @@ import {
 } from "./profiles.js";
 import { platformEntry } from "./platform-catalog.js";
 import { fieldFingerprint } from "./existing-platforms.js";
-import { readOpenpaasPage, type OpenpaasGame } from "./openpaas.js";
+import { readOpenpaasPage, assertExistingGameSelectable, type OpenpaasGame } from "./openpaas.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
+import { builderUiLabels } from "./builder-ui-labels.js";
 
 interface Probe {
+  owner: string;
   openpaasGames?: OpenpaasGame[];
   snapshots: TaskSnapshot[];
   observations: Record<string, TaskObservation>;
@@ -53,8 +56,9 @@ export class ConfigurationReadinessError extends Error {
 
 /** Current Windows Builder UI adapter. No product commands or build RPCs are invoked. */
 export class Builder {
+  private readonly probeOwner = randomUUID();
   private configurationGenerationValue = 0;
-  private probeInstalled = false;
+  private probeAttempted = false;
   private readiness?: ConfigurationReadiness;
   private expectedConfigurationTitle?: string;
   private revealedBatchLabel?: string;
@@ -142,7 +146,12 @@ export class Builder {
             return Array.from(content.querySelectorAll<HTMLButtonElement>("button")).some(
               (button) =>
                 button.getClientRects().length > 0 &&
-                ["查看构建记录", "编译与打包结果"].includes(button.innerText.trim()),
+                [
+                  "查看构建记录",
+                  "编译与打包结果",
+                  "View build history",
+                  "Build & Package Results",
+                ].includes(button.innerText.trim()),
             )
               ? true
               : undefined;
@@ -173,19 +182,22 @@ export class Builder {
       | "history-option"
       | "batch"
       | "section"
+      | "case-hover"
       | "case-control",
     label: string,
     uiLabel?: string,
     choiceLabel?: string,
+    safeEdges = false,
   ) {
     return this.cdp.evaluate(
-      (kind, label, uiLabel, choiceLabel) => {
+      (kind, label, uiLabel, choiceLabel, safeEdges, acceptedLabels) => {
         const matches: Array<{ element: HTMLElement; chain: HTMLIFrameElement[] }> = [];
         function scan(doc: Document, chain: HTMLIFrameElement[]) {
           const selectors = {
             button: "button",
             section: '[role="button"][tabindex]',
             "case-control": label,
+            "case-hover": label,
             platform: ".platform-card, .pk-card",
             checkbox: `[data-option-key="${CSS.escape(label)}"] [role="checkbox"]`,
             select: `[data-option-key="${CSS.escape(label)}"] [role="combobox"]`,
@@ -214,7 +226,7 @@ export class Builder {
                 ? '[role="checkbox"]'
                 : 'input:not([type="hidden"]):not([type="checkbox"])';
           const inCaseDocument =
-            kind !== "case-control" ||
+            (kind !== "case-control" && kind !== "case-hover") ||
             doc === document.querySelector<HTMLIFrameElement>("#active-frame")?.contentDocument;
           const elements = !inCaseDocument
             ? []
@@ -246,11 +258,17 @@ export class Builder {
                         .querySelector(".platform-card-title, .pk-card-foot")
                         ?.textContent?.trim()
                     : label;
-            if (text !== label || element.getClientRects().length === 0) continue;
+            if (!acceptedLabels.includes(text ?? "") || element.getClientRects().length === 0)
+              continue;
             const style = doc.defaultView!.getComputedStyle(element);
             if (style.visibility !== "visible" || style.pointerEvents === "none") continue;
-            if (element instanceof doc.defaultView!.HTMLButtonElement && element.disabled) continue;
-            if (element.getAttribute("aria-disabled") === "true") continue;
+            if (
+              kind !== "case-hover" &&
+              element instanceof doc.defaultView!.HTMLButtonElement &&
+              element.disabled
+            )
+              continue;
+            if (kind !== "case-hover" && element.getAttribute("aria-disabled") === "true") continue;
             matches.push({ element, chain });
           }
           for (const frame of doc.querySelectorAll<HTMLIFrameElement>("iframe")) {
@@ -267,22 +285,40 @@ export class Builder {
         if (!match) return null;
         match.element.scrollIntoView({ block: "center", inline: "center" });
         const rect = match.element.getBoundingClientRect();
-        let x = rect.left + rect.width / 2;
-        let y = rect.top + rect.height / 2;
-        const hit = match.element.ownerDocument.elementFromPoint(x, y);
-        if (!hit || !match.element.contains(hit)) return null;
-        for (const frame of [...match.chain].reverse()) {
-          const rect = frame.getBoundingClientRect();
-          x += rect.left + frame.clientLeft;
-          y += rect.top + frame.clientTop;
-          if (frame.ownerDocument.elementFromPoint(x, y) !== frame) return null;
+        const candidates = safeEdges
+          ? [
+              [0.5, 0.5],
+              [0.2, 0.5],
+              [0.8, 0.5],
+              [0.2, 0.8],
+              [0.8, 0.8],
+            ]
+          : [[0.5, 0.5]];
+        for (const [rx, ry] of candidates) {
+          let x = rect.left + rect.width * rx,
+            y = rect.top + rect.height * ry;
+          const hit = match.element.ownerDocument.elementFromPoint(x, y);
+          if (!hit || !match.element.contains(hit)) continue;
+          let covered = false;
+          for (const frame of [...match.chain].reverse()) {
+            const rect = frame.getBoundingClientRect();
+            x += rect.left + frame.clientLeft;
+            y += rect.top + frame.clientTop;
+            if (frame.ownerDocument.elementFromPoint(x, y) !== frame) {
+              covered = true;
+              break;
+            }
+          }
+          if (!covered) return { x, y };
         }
-        return { x, y };
+        return null;
       },
       kind,
       label,
       uiLabel,
       choiceLabel,
+      safeEdges,
+      builderUiLabels(kind, label),
     );
   }
 
@@ -307,12 +343,13 @@ export class Builder {
     uiLabel?: string,
     choiceLabel?: string,
     beforeInput?: () => Promise<void>,
+    safeEdges = false,
   ): Promise<number> {
     let previousPoint: { x: number; y: number } | undefined;
     const point = await waitFor(
       `可点击的 ${label}`,
       async () => {
-        const current = await this.point(kind, label, uiLabel, choiceLabel);
+        const current = await this.point(kind, label, uiLabel, choiceLabel, safeEdges);
         if (kind !== "platform") return current ?? undefined;
         const stable =
           current &&
@@ -359,10 +396,11 @@ export class Builder {
       specialFields: SpecialFieldContract[],
       observeOpenpaas: boolean,
       caseKeys: string[],
+      owner: string,
     ) => {
       const window = document.defaultView as ProbeWindow;
       if (window.__pinkBuildUiProbe) throw new Error("该 Builder 已有工具观察器，请先结束原运行");
-      const probe: Probe = { snapshots: [], observations: {}, listener: () => {} };
+      const probe: Probe = { owner, snapshots: [], observations: {}, listener: () => {} };
       probe.listener = (event) => {
         const message = event.data as {
           source?: string;
@@ -408,7 +446,8 @@ export class Builder {
           tasks.length === 0 &&
           !Array.from(document.querySelectorAll<HTMLElement>("button")).some(
             (button) =>
-              button.getClientRects().length > 0 && button.innerText.trim() === "编译与打包结果",
+              button.getClientRects().length > 0 &&
+              ["编译与打包结果", "Build & Package Results"].includes(button.innerText.trim()),
           )
         )
           return;
@@ -542,8 +581,8 @@ export class Builder {
       window.__pinkBuildUiProbe = probe;
       window.addEventListener("message", probe.listener);
     };
-    await this.cdp.dom(install, specialFields, observeOpenpaas, caseKeys);
-    this.probeInstalled = true;
+    this.probeAttempted = true;
+    await this.cdp.dom(install, specialFields, observeOpenpaas, caseKeys, this.probeOwner);
   }
 
   async snapshots(): Promise<TaskSnapshot[]> {
@@ -678,13 +717,7 @@ export class Builder {
 
   async selectOpenpaasGame(id: string, beforeInput?: () => Promise<void>): Promise<void> {
     const before = await this.openpaasPage();
-    if (
-      !/^\d+$/.test(id) ||
-      !before.ids.includes(id) ||
-      before.ids.filter((value) => value.startsWith(id)).length !== 1 ||
-      before.createLabel.startsWith(id[0])
-    )
-      throw new Error("游戏ID须唯一匹配当前账号的已有候选；禁止选择创建游戏入口");
+    assertExistingGameSelectable(before, id);
     await this.click(
       "native-select",
       "packages.openpaas.appid",
@@ -1411,6 +1444,27 @@ export class Builder {
     return this.cdp.dom(fn, ...args);
   }
 
+  async caseHover(selector: string, verify?: () => Promise<void>) {
+    await verify?.();
+    const point = await this.point("case-hover", selector);
+    if (!point) throw new Error("阶段提示目标不可见或被覆盖");
+    const box = await this.page.locator(`iframe[name="${this.hostName}"]`).boundingBox();
+    if (!box) throw new Error("Builder Frame 不可见");
+    const x = box.x + point.x,
+      y = box.y + point.y;
+    if (
+      !(await this.page.evaluate(
+        ({ x, y, name }) => document.elementFromPoint(x, y)?.getAttribute("name") === name,
+        { x, y, name: this.hostName },
+      ))
+    )
+      throw new Error("工作台覆盖阶段提示目标");
+    await verify?.();
+    // A new tooltip trigger may mount under the old pointer position; create a real enter.
+    await this.page.mouse.move(0, 0);
+    await this.page.mouse.move(x, y);
+  }
+
   private async assertCaseKeyboardFocus(selector: string): Promise<void> {
     await waitFor(
       "构建配置控件取得键盘焦点（未发送按键）",
@@ -1517,13 +1571,16 @@ export class Builder {
   async close(): Promise<void> {
     this.configurationGenerationValue++;
     try {
-      if (this.probeInstalled)
-        await this.cdp.dom((document) => {
+      if (this.probeAttempted)
+        await this.cdp.dom((document, owner) => {
           const window = document.defaultView as ProbeWindow;
           const probe = window.__pinkBuildUiProbe;
+          if (probe && probe.owner !== owner)
+            throw new Error("观察器已不属于本次运行；禁止释放其他执行器的监听");
           if (probe) window.removeEventListener("message", probe.listener);
           delete window.__pinkBuildUiProbe;
-        });
+          if (window.__pinkBuildUiProbe) throw new Error("本次观察器未释放");
+        }, this.probeOwner);
     } finally {
       this.cdp.close();
     }

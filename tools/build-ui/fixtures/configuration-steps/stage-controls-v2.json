@@ -1,0 +1,774 @@
+{
+  "kind": "pink-configuration-steps",
+  "schemaVersion": 2,
+  "cases": [
+    {
+      "caseId": "UI-P07-S01.wechat",
+      "platform": "wechatgame",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "original",
+          "op": "stage.record",
+          "page": "page"
+        },
+        {
+          "id": "initialRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "initial",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "initialRead",
+          "expected": {
+            "groups": [["build", "run"]]
+          }
+        },
+        {
+          "id": "prepareSplit",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "run"
+        },
+        {
+          "id": "separateRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "separate",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "separateRead",
+          "expected": {
+            "groups": [["build"], ["run"]],
+            "disabled": {
+              "build": false,
+              "run": true
+            },
+            "linkDisabled": {
+              "run": false
+            }
+          }
+        },
+        {
+          "id": "connectHint",
+          "op": "stage.hint",
+          "page": "page",
+          "control": "link",
+          "stage": "run",
+          "contains": "链接到上一个阶段"
+        },
+        {
+          "id": "join",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "build",
+          "stage": "run"
+        },
+        {
+          "id": "joinedRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "joined",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "joinedRead",
+          "expected": {
+            "groups": [["build", "run"]]
+          }
+        },
+        {
+          "id": "unlinkHint",
+          "op": "stage.hint",
+          "page": "page",
+          "control": "unlink",
+          "stage": "run",
+          "contains": "断开链接"
+        },
+        {
+          "id": "closeForPersistence",
+          "op": "config.close",
+          "page": "page"
+        },
+        {
+          "id": "reopened",
+          "op": "config.open"
+        },
+        {
+          "id": "persistedRead",
+          "op": "stage.read",
+          "page": "reopened"
+        },
+        {
+          "id": "persisted",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "persistedRead",
+          "expected": {
+            "groups": [["build", "run"]]
+          }
+        },
+        {
+          "id": "split",
+          "op": "stage.unlink",
+          "page": "reopened",
+          "record": "original",
+          "group": "build",
+          "stage": "run"
+        },
+        {
+          "id": "splitCheckedRead",
+          "op": "stage.read",
+          "page": "reopened"
+        },
+        {
+          "id": "splitChecked",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "splitCheckedRead",
+          "expected": {
+            "groups": [["build"], ["run"]]
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreStages",
+          "op": "stage.restore",
+          "page": "cleanup",
+          "record": "original",
+          "reopen": true
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S02.windows",
+      "platform": "windows",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "original",
+          "op": "stage.record",
+          "page": "page"
+        },
+        {
+          "id": "initialRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "initial",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "initialRead",
+          "expected": {
+            "groups": [["build"], ["make"], ["run"]],
+            "disabled": {
+              "build": false,
+              "make": true,
+              "run": true
+            },
+            "linkDisabled": {
+              "make": false,
+              "run": false
+            }
+          }
+        },
+        {
+          "id": "connectHint",
+          "op": "stage.hint",
+          "page": "page",
+          "control": "link",
+          "stage": "run",
+          "contains": "链接到上一个阶段"
+        },
+        {
+          "id": "one",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "make",
+          "stage": "run"
+        },
+        {
+          "id": "oneCheckRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "oneCheck",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "oneCheckRead",
+          "expected": {
+            "groups": [["build"], ["make", "run"]]
+          }
+        },
+        {
+          "id": "two",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "build",
+          "stage": "make"
+        },
+        {
+          "id": "twoCheckRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "twoCheck",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "twoCheckRead",
+          "expected": {
+            "groups": [["build", "make", "run"]]
+          }
+        },
+        {
+          "id": "three",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "run"
+        },
+        {
+          "id": "threeCheckRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "threeCheck",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "threeCheckRead",
+          "expected": {
+            "groups": [["build", "make"], ["run"]]
+          }
+        },
+        {
+          "id": "four",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "build",
+          "stage": "run"
+        },
+        {
+          "id": "fourCheckRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "fourCheck",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "fourCheckRead",
+          "expected": {
+            "groups": [["build", "make", "run"]]
+          }
+        },
+        {
+          "id": "five",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "make"
+        },
+        {
+          "id": "fiveCheckRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "fiveCheck",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "fiveCheckRead",
+          "expected": {
+            "groups": [["build"], ["make", "run"]]
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreStages",
+          "op": "stage.restore",
+          "page": "cleanup",
+          "record": "original",
+          "reopen": true
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S03.oppo",
+      "platform": "oppo-mini-game",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "original",
+          "op": "stage.record",
+          "page": "page"
+        },
+        {
+          "id": "initialRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "initial",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "initialRead",
+          "expected": {
+            "groups": [["build"], ["make"]],
+            "visible": ["build", "make"]
+          }
+        },
+        {
+          "id": "join",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "build",
+          "stage": "make"
+        },
+        {
+          "id": "joinedRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "joined",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "joinedRead",
+          "expected": {
+            "groups": [["build", "make"]],
+            "visible": ["build", "make"]
+          }
+        },
+        {
+          "id": "split",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "make"
+        },
+        {
+          "id": "splitCheckedRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "splitChecked",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "splitCheckedRead",
+          "expected": {
+            "groups": [["build"], ["make"]]
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreStages",
+          "op": "stage.restore",
+          "page": "cleanup",
+          "record": "original",
+          "reopen": false
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S04.openpaas",
+      "platform": "openpaas",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "original",
+          "op": "stage.record",
+          "page": "page"
+        },
+        {
+          "id": "initialRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "initial",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "initialRead",
+          "expected": {
+            "groups": [["build"], ["publish"]],
+            "visible": ["build", "publish"],
+            "disabled": {
+              "publish": true
+            },
+            "linkDisabled": {
+              "publish": false
+            }
+          }
+        },
+        {
+          "id": "connectHint",
+          "op": "stage.hint",
+          "page": "page",
+          "control": "link",
+          "stage": "publish",
+          "contains": "链接到上一个阶段"
+        },
+        {
+          "id": "join",
+          "op": "stage.link",
+          "page": "page",
+          "record": "original",
+          "previous": "build",
+          "stage": "publish"
+        },
+        {
+          "id": "joinedRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "joined",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "joinedRead",
+          "expected": {
+            "groups": [["build", "publish"]],
+            "visible": ["build", "publish"]
+          }
+        },
+        {
+          "id": "split",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "publish"
+        },
+        {
+          "id": "splitCheckedRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "splitChecked",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "splitCheckedRead",
+          "expected": {
+            "groups": [["build"], ["publish"]]
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreStages",
+          "op": "stage.restore",
+          "page": "cleanup",
+          "record": "original",
+          "reopen": false
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S05.next",
+      "platform": "harmonyos-next",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "onlyBuildRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "onlyBuild",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "onlyBuildRead",
+          "expected": {
+            "groups": [["build"]],
+            "visible": ["build"]
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S06.wechat",
+      "platform": "wechatgame",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "fields",
+          "op": "record",
+          "page": "page",
+          "fields": ["name", "startScene", "scenes"]
+        },
+        {
+          "id": "original",
+          "op": "stage.record",
+          "page": "page"
+        },
+        {
+          "id": "initialRead",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "initial",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "initialRead",
+          "expected": {
+            "groups": [["build", "run"]]
+          }
+        },
+        {
+          "id": "blocked",
+          "op": "assert",
+          "check": "build-scope",
+          "page": "page",
+          "expected": {
+            "allowed": false
+          }
+        },
+        {
+          "id": "split",
+          "op": "stage.unlink",
+          "page": "page",
+          "record": "original",
+          "group": "build",
+          "stage": "run"
+        },
+        {
+          "id": "allowed",
+          "op": "assert",
+          "check": "build-scope",
+          "page": "page",
+          "expected": {
+            "allowed": true
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "restoreStages",
+          "op": "stage.restore",
+          "page": "cleanup",
+          "record": "original",
+          "reopen": true
+        },
+        {
+          "id": "restoreFields",
+          "op": "restore",
+          "page": "cleanup",
+          "record": "fields"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    },
+    {
+      "caseId": "UI-P07-S02.disabled-hint",
+      "platform": "windows",
+      "onFailure": "continue",
+      "steps": [
+        {
+          "id": "page",
+          "op": "config.open"
+        },
+        {
+          "id": "observed",
+          "op": "stage.read",
+          "page": "page"
+        },
+        {
+          "id": "disabled",
+          "op": "assert",
+          "check": "stages",
+          "snapshot": "observed",
+          "expected": {
+            "groups": [["build"], ["make"], ["run"]],
+            "disabled": {
+              "make": true,
+              "run": true
+            }
+          }
+        },
+        {
+          "id": "disabledHint",
+          "op": "stage.hint",
+          "page": "page",
+          "control": "button",
+          "stage": "make",
+          "contains": "请先构建"
+        }
+      ],
+      "finally": [
+        {
+          "id": "cleanup",
+          "op": "config.open"
+        },
+        {
+          "id": "close",
+          "op": "config.close",
+          "page": "cleanup"
+        }
+      ]
+    }
+  ]
+}
