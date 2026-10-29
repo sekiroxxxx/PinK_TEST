@@ -15,6 +15,7 @@ export function catalogStepSequence(item: BuildCase): BuildStepCase {
   const c = item.finalized!,
     values = c.inputs ?? {},
     platform = item.platform;
+  const restoreConfiguration = c.group === "conditional" || c.endpoint === "ui";
   const retained = catalogRetainedFields(c);
   const prefix = `packages.${platform}.`,
     encrypted = prefix + "encrypted",
@@ -39,7 +40,8 @@ export function catalogStepSequence(item: BuildCase): BuildStepCase {
     { id: "open", op: "config.open" },
     { id: "ready", op: "config.ready", page: "open" },
   ];
-  if (fields.size) steps.push({ id: "original", op: "record", page: "open", fields: [...fields] });
+  if (restoreConfiguration && fields.size)
+    steps.push({ id: "original", op: "record", page: "open", fields: [...fields] });
   if (retained.length) steps.push({ id: "retained", op: "retain", page: "open", fields: retained });
   let index = 0;
   const id = (name: string) => `${name}-${++index}`;
@@ -192,7 +194,7 @@ export function catalogStepSequence(item: BuildCase): BuildStepCase {
     steps,
     finally: [
       { id: "cleanup", op: "config.open" },
-      ...(fields.size
+      ...(restoreConfiguration && fields.size
         ? [{ id: "restore", op: "restore" as const, page: "cleanup", record: "original" }]
         : []),
       { id: "close", op: "config.close", page: "cleanup" },

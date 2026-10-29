@@ -669,6 +669,25 @@ test("platform actions use existing game/file contracts and restore the original
     } finally {
       await noOriginalGame.dispose();
     }
+    const keepGame = structuredClone(invalidGame);
+    keepGame.cases[0].steps = keepGame.cases[0].steps.filter((s) => s.op !== "record");
+    keepGame.cases[0].finally = keepGame.cases[0].finally.filter((s) => s.op !== "restore");
+    const retainedGame = await observe(w, {
+      "packages.openpaas.appid": "",
+      "packages.openpaas.versionName": "1.2.3",
+    });
+    try {
+      const result = await runConfigurationSteps(await w.load(keepGame), retainedGame.env);
+      assert.equal(result.outcome, "passed", JSON.stringify(result.cases[0].failure));
+      assert.equal(result.cases[0].restoration, "not-required");
+      assert.equal(retainedGame.values["packages.openpaas.appid"], "200");
+      assert.deepEqual(
+        retainedGame.events.filter((event) => event.startsWith("game:")),
+        ["game:200"],
+      );
+    } finally {
+      await retainedGame.dispose();
+    }
   } finally {
     await w.dispose();
   }
@@ -801,7 +820,7 @@ test("catalog uses retained, dynamic and platform operations without skipping re
       "../../case-catalog/public-combinations.json",
       import.meta.url,
     ).pathname.replace(/^\/(\w:)/, "$1");
-    const plan = await catalogToSteps(path, { project: w.root, groups: "publish,debug" });
+    const plan = await catalogToSteps(path, { project: w.root, groups: "publish,debug,mixed" });
     const web = plan.cases.find((c) => c.caseId === "review.publish.web-desktop")!;
     assert.equal(web.status, "ready", JSON.stringify(web.gaps));
     const steps = web.document!.cases[0].steps;
@@ -812,6 +831,10 @@ test("catalog uses retained, dynamic and platform operations without skipping re
     );
     for (const c of plan.cases.filter((c) => c.group === "debug"))
       assert.ok(!c.gaps.some((g) => g.kind === "ui-adapter"), c.caseId + JSON.stringify(c.gaps));
+    for (const c of plan.document!.cases) {
+      assert.ok(!c.steps.some((s) => s.op === "record"), c.caseId);
+      assert.ok(!c.finally.some((s) => s.op === "restore"), c.caseId);
+    }
     const raw = JSON.parse(await readFile(path, "utf8"));
     // Keep source prerequisites: do not turn unrelated fourth-group assertions into basic builds.
     const conditional = await catalogToSteps(path, {

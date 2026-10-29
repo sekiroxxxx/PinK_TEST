@@ -2,7 +2,8 @@ import type {
   ConfigurationStep,
   ConfigurationStepsDocument,
 } from "./configuration-steps-contract.js";
-import type { ConfigurationTarget } from "./configuration-targets.js";
+import { validateConfigurationTargets, type ConfigurationTarget } from "./configuration-targets.js";
+import type { CandidateMatch, ProbeExpected } from "./standard-fields.js";
 import type { CaseValue } from "./finalized-cases.js";
 import { hiddenCondition, preparationFields } from "./configuration-step-values.js";
 import { configurationFamilies } from "./configuration-operations.js";
@@ -10,8 +11,30 @@ import { platformCatalog } from "./platform-catalog.js";
 import type { StageExpected } from "./configuration-stages.js";
 import type { InitialChecks } from "./configuration-input-actions.js";
 import { stepOperations, stepAssertions } from "./step-operation-capabilities.js";
+import type { BuilderTarget, BuilderHomeExpected } from "./builder-checks.js";
 
 export type BuildStep =
+  | { id: string; op: "builder.open" | "builder.home" }
+  | { id: string; op: "builder.read"; page: string }
+  | {
+      id: string;
+      op: "assert";
+      check: "builder-state";
+      snapshot: string;
+      expected: BuilderHomeExpected;
+    }
+  | { id: string; op: "platform.probe" }
+  | { id: string; op: "config.probe" | "config.candidates"; page: string; field: string }
+  | { id: string; op: "config.select"; page: string; field: string; candidate: CandidateMatch }
+  | { id: string; op: "assert"; check: "probe"; observation: string; expected: ProbeExpected }
+  | {
+      id: string;
+      op: "assert";
+      check: "candidate";
+      observation: string;
+      candidate: CandidateMatch;
+      expected: { present: boolean; disabled?: boolean };
+    }
   | { id: string; op: "config.open" }
   | { id: string; op: "config.close"; page: string }
   | { id: string; op: "config.ready"; page: string }
@@ -79,7 +102,8 @@ export type BuildStep =
     };
 export interface BuildStepCase {
   caseId: string;
-  platform: string;
+  platform?: string;
+  target?: BuilderTarget;
   onFailure?: "continue" | "stop";
   steps: BuildStep[];
   finally: BuildStep[];
@@ -120,16 +144,102 @@ export function validateBuildSteps(
   )
     error("document", "需要非空 v2 步骤用例");
   const projections: unknown[] = [];
+  const caseIds = new Set<string>();
+  const targets = validateConfigurationTargets(doc.targets);
   for (const [ci, raw] of (doc.cases as unknown[]).entries()) {
     const at = `cases[${ci}]`,
       c = obj(raw, at);
-    keys(c, ["caseId", "platform", "onFailure", "steps", "finally"], at);
+    keys(c, ["caseId", "platform", "target", "onFailure", "steps", "finally"], at);
+    const caseId = id(c.caseId, at);
+    if (caseIds.has(caseId)) error(at, "用例 caseId 重复");
+    caseIds.add(caseId);
+    if (c.onFailure !== undefined && !["continue", "stop"].includes(String(c.onFailure)))
+      error(at, "onFailure 仅支持 continue/stop");
     if (!Array.isArray(c.steps) || !c.steps.length || !Array.isArray(c.finally))
       error(at, "需要 steps 与 finally 数组");
+    if (c.target !== undefined) {
+      if (c.platform !== undefined) error(at, "公共目标不能同时声明 platform");
+      const target = obj(c.target, `${at}.target`);
+      keys(target, ["kind", "category"], `${at}.target`);
+      if (
+        target.kind !== "builder" ||
+        !["X-Device", "X-Application"].includes(String(target.category))
+      )
+        error(at, "公共目标仅支持 Builder 分类");
+      let page: string | undefined;
+      const snapshots = new Set<string>();
+      const ids = new Set<string>();
+      for (const [cleanup, sequence] of [
+        [false, c.steps],
+        [true, c.finally],
+      ] as const) {
+        for (const [index, rawStep] of (sequence as unknown[]).entries()) {
+          const where = `${at}.${cleanup ? "finally" : "steps"}[${index}]`,
+            s = obj(rawStep, where);
+          const stepId = id(s.id, where);
+          if (ids.has(stepId)) error(where, "步骤 id 重复");
+          ids.add(stepId);
+          if (s.op === "builder.open" && !cleanup) {
+            keys(s, ["id", "op"], where);
+            page = stepId;
+            snapshots.clear();
+          } else if (s.op === "builder.read" && !cleanup) {
+            keys(s, ["id", "op", "page"], where);
+            if (!page || s.page !== page) error(where, "公共页面回读须引用前面的打开步骤");
+            snapshots.add(stepId);
+          } else if (s.op === "assert" && s.check === "builder-state" && !cleanup) {
+            keys(s, ["id", "op", "check", "snapshot", "expected"], where);
+            if (!snapshots.has(String(s.snapshot)))
+              error(where, "公共断言须引用本例当前页面的回读");
+            const expected = obj(s.expected, `${where}.expected`);
+            keys(expected, ["ready", "buttons"], where);
+            if (!Object.keys(expected).length) error(where, "公共断言需要明确预期");
+            if (expected.ready !== undefined && typeof expected.ready !== "boolean")
+              error(where, "ready 须为布尔值");
+            if (expected.buttons !== undefined) {
+              const buttons = obj(expected.buttons, where);
+              keys(buttons, ["history", "build-all"], where);
+              if (!Object.keys(buttons).length) error(where, "按钮预期不能为空");
+              for (const value of Object.values(buttons)) {
+                const state = obj(value, where);
+                keys(state, ["visible", "disabled"], where);
+                if (
+                  !Object.keys(state).length ||
+                  Object.values(state).some((v) => typeof v !== "boolean")
+                )
+                  error(where, "按钮预期须明确布尔状态");
+              }
+            }
+          } else if (s.op === "builder.home" && cleanup) keys(s, ["id", "op"], where);
+          else error(where, "公共目标不支持此操作；不能使用平台配置或隐式构建");
+        }
+      }
+      if (
+        (c.finally as unknown[]).length !== 1 ||
+        obj((c.finally as unknown[])[0], at).op !== "builder.home"
+      )
+        error(at, "公共检查 finally 必须声明一次返回构建主页");
+      continue;
+    }
+    id(c.platform, `${at}.platform`);
     if (!(c.finally as unknown[]).some((step) => obj(step, at).op === "config.close"))
       error(at, "finally 必须声明关闭操作，失败时也要收尾");
     if (obj((c.finally as unknown[])[0], at).op !== "config.open")
       error(at, "finally 须先绑定清理页面，不能依赖可能未执行的页面步骤");
+    const recordsConfiguration = (c.steps as unknown[]).some((s) => obj(s, at).op === "record");
+    const target = targets.find((t) => t.id === c.platform);
+    const observations = new Map<string, { page?: string; revision: number; kind: string }>();
+    const candidate = (raw: unknown, where: string) => {
+      const value = obj(raw, where);
+      keys(value, value.by === "value" ? ["by", "value"] : ["by", "label"], where);
+      if (
+        value.by === "value"
+          ? !["string", "number", "boolean"].includes(typeof value.value) ||
+            (typeof value.value === "number" && !Number.isFinite(value.value))
+          : value.by !== "label" || typeof value.label !== "string" || !value.label.trim()
+      )
+        error(where, "候选须按有类型值或精确标签匹配");
+    };
     let active: string | undefined,
       record: string | undefined,
       restored = false,
@@ -169,7 +279,8 @@ export function validateBuildSteps(
     };
     const mutate = (fields: string[], where: string) => {
       for (const field of fields) {
-        if (!recorded.has(field)) error(where, `操作前必须记录字段：${field}`);
+        if (recordsConfiguration && !recorded.has(field))
+          error(where, `要求恢复的用例须在操作前记录字段：${field}`);
         if ([...retained.values()].some((fields) => fields.includes(field)))
           error(where, "保留字段不能同时作为写入目标");
         allFields.add(field);
@@ -216,6 +327,30 @@ export function validateBuildSteps(
           error(where, "finally 只允许打开、恢复、关闭");
         const { page: _page, scope: _scope, ...projection } = s;
         switch (s.op) {
+          case "platform.probe":
+            keys(s, ["id", "op"], where);
+            if (active) error(where, "平台探查须在配置页外进行");
+            observations.set(stepId, { revision, kind: "probe" });
+            break;
+          case "config.probe":
+          case "config.candidates":
+            keys(s, ["id", "op", "page", "field"], where);
+            usePage(s.page, where);
+            allFields.add(String(s.field));
+            observations.set(stepId, {
+              page: active,
+              revision,
+              kind: s.op === "config.probe" ? "probe" : "candidate",
+            });
+            break;
+          case "config.select":
+            keys(s, ["id", "op", "page", "field", "candidate"], where);
+            usePage(s.page, where);
+            candidate(s.candidate, where);
+            mutate([String(s.field)], where);
+            if (obj(s.candidate, where).by === "value")
+              validateInput(String(s.field), obj(s.candidate, where).value, stepId);
+            break;
           case "config.open":
             keys(s, ["id", "op"], where);
             if (submitted && !waited) error(where, "本批须等待任务收尾后才能再次打开配置");
@@ -421,7 +556,7 @@ export function validateBuildSteps(
             record = stepId;
             for (const f of [
               ...(s.fields as string[]),
-              ...configurationFamilies(s.fields as string[]).flatMap((family) => [
+              ...configurationFamilies(s.fields as string[], target?.families).flatMap((family) => [
                 family.parent,
                 ...family.children,
               ]),
@@ -485,6 +620,50 @@ export function validateBuildSteps(
             break;
           case "assert":
             if (!Object.hasOwn(stepAssertions, String(s.check))) error(where, "未支持的断言");
+            if (s.check === "probe" || s.check === "candidate") {
+              keys(
+                s,
+                s.check === "probe"
+                  ? ["id", "op", "check", "observation", "expected"]
+                  : ["id", "op", "check", "observation", "candidate", "expected"],
+                where,
+              );
+              const observed = observations.get(String(s.observation));
+              if (
+                !observed ||
+                observed.page !== active ||
+                observed.revision !== revision ||
+                observed.kind !== s.check
+              )
+                error(where, "须引用同一上下文中未过期的目标或候选观察");
+              const expected = obj(s.expected, where);
+              if (s.check === "probe") {
+                keys(expected, ["presence", "visible", "readable", "writable", "control"], where);
+                if (
+                  !Object.keys(expected).length ||
+                  (expected.presence !== undefined &&
+                    !["present", "absent"].includes(String(expected.presence))) ||
+                  ["visible", "readable", "writable"].some(
+                    (k) => expected[k] !== undefined && typeof expected[k] !== "boolean",
+                  ) ||
+                  (expected.control !== undefined &&
+                    !["text", "number", "boolean", "enum", "platform-card"].includes(
+                      String(expected.control),
+                    ))
+                )
+                  error(where, "目标断言需要明确的存在性、状态或控件类型");
+              } else {
+                keys(expected, ["present", "disabled"], where);
+                candidate(s.candidate, where);
+                if (
+                  typeof expected.present !== "boolean" ||
+                  (expected.disabled !== undefined &&
+                    (typeof expected.disabled !== "boolean" || !expected.present))
+                )
+                  error(where, "候选预期需要 present；禁用状态仅用于存在的候选");
+              }
+              break;
+            }
             if (s.check === "empty" || s.check === "protected-choice") {
               keys(s, ["id", "op", "check", "page", "field"], where);
               usePage(s.page, where);
@@ -644,6 +823,7 @@ export function validateBuildSteps(
     if (record && !restored) error(at, "原值记录必须有 finally 恢复");
     if (stageRecord && !stagesRestored) error(at, "阶段原值记录必须有 finally 恢复");
     if (
+      recordsConfiguration &&
       (mutated.has("startScene") || mutated.has("scenes")) &&
       (!recorded.has("startScene") || !recorded.has("scenes"))
     )
@@ -652,6 +832,8 @@ export function validateBuildSteps(
       error(at, "构建快照需要对应的提交步骤");
     if (submitted && !platformCatalog.some((p) => p.id === c.platform))
       error(at, "新标准平台尚无构建合同，仅支持配置操作");
+    if (submitted && target && Object.keys(target.fields).some((field) => allFields.has(field)))
+      error(at, "描述扩展的标准字段尚无任务参数合同，仅支持配置检查");
     if (submitted && (!waited || !checked)) error(at, "提交后必须声明等待和结果断言");
     let prefix = "projection";
     while (ids.has(prefix) || ids.has(prefix + "End")) prefix += "X";
@@ -666,12 +848,13 @@ export function validateBuildSteps(
       ],
     });
   }
-  validateV1({
-    kind: "pink-configuration-steps",
-    schemaVersion: 1,
-    targets: doc.targets,
-    cases: projections,
-  });
+  if (projections.length)
+    validateV1({
+      kind: "pink-configuration-steps",
+      schemaVersion: 1,
+      targets: doc.targets,
+      cases: projections,
+    });
   return structuredClone(doc) as unknown as BuildStepsDocument;
 }
 
@@ -682,6 +865,7 @@ export function buildStepDependencies(c: BuildStepCase) {
     const requires = [
       ...("page" in s ? [s.page] : []),
       ...("snapshot" in s ? [s.snapshot] : []),
+      ...("observation" in s ? [s.observation] : []),
       ...("task" in s ? [s.task] : []),
       ...("result" in s ? [s.result] : []),
       ...("retained" in s && s.retained ? [s.retained] : []),
@@ -692,6 +876,7 @@ export function buildStepDependencies(c: BuildStepCase) {
         ? []
         : [
               "set",
+              "config.select",
               "config.prepare",
               "input.google-icon",
               "input.openpaas-game",

@@ -41,6 +41,7 @@ export interface Task {
 
 export interface TaskSnapshot {
   at: number;
+  requestSequence?: number;
   tasks: Task[];
 }
 

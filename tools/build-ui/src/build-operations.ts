@@ -82,7 +82,7 @@ export async function waitBuild(input: {
   queueTimeoutMs: number;
   buildTimeoutMs: number;
   signal: AbortSignal;
-  onObservation?(task: Task): void;
+  onObservation?(task: Task): void | Promise<void>;
   verify?(): Promise<void>;
 }) {
   try {
@@ -90,7 +90,7 @@ export async function waitBuild(input: {
       input.signal.throwIfAborted();
       await input.verify?.();
       const task = observedBuildTask(input.source, input.taskId);
-      input.onObservation?.(task);
+      await input.onObservation?.(task);
       const timeout = taskTimeout(
         task,
         input.submittedAt,

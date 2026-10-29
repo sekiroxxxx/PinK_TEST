@@ -5,6 +5,7 @@ import { ConfigurationContext, ConfigurationOperationError } from "./configurati
 import type { FormView } from "./configuration-page.js";
 import { assertOpenpaasBuildReady, type OpenpaasPageState } from "./openpaas.js";
 import { ConfigurationStages, type StagePort } from "./configuration-stages.js";
+import type { TargetObservation, CandidateObservation, CandidateMatch } from "./standard-fields.js";
 
 /** Existing UI adapters implement this port; it deliberately has no build or task mutation. */
 export interface ConfigurationPort extends Partial<StagePort> {
@@ -23,12 +24,20 @@ export interface ConfigurationPort extends Partial<StagePort> {
   openpaasPage?(): Promise<OpenpaasPageState>;
   selectOpenpaasGame?(id: string): Promise<void>;
   configurationPage?(): Promise<FormView>;
+  fieldFamilies?(fields: string[]): ConfigurationFamily[];
+  probe?(field: string): Promise<TargetObservation>;
+  candidates?(field: string): Promise<CandidateObservation>;
+  selectCandidate?(
+    field: string,
+    match: CandidateMatch,
+  ): Promise<{ changed: boolean; selected: { value?: string | number | boolean; label: string } }>;
 }
 
 export interface ConfigurationFamily {
   parent: string;
   enabled: CaseValue;
   children: string[];
+  requiresReadableOriginals?: boolean;
 }
 export interface ConfigurationAssertion {
   phase: string;
@@ -37,13 +46,17 @@ export interface ConfigurationAssertion {
 }
 
 /** UI dependencies, shared by preparation and recovery rather than tied to FORM sample IDs. */
-export function configurationFamilies(fields: string[]): ConfigurationFamily[] {
+export function configurationFamilies(
+  fields: string[],
+  declared: ConfigurationFamily[] = [],
+): ConfigurationFamily[] {
   const found = new Map<string, ConfigurationFamily>();
   for (const field of fields) {
     const prefix = field.startsWith("packages.")
       ? field.split(".").slice(0, 2).join(".") + "."
       : "";
     const candidates: ConfigurationFamily[] = [
+      ...declared,
       {
         parent: prefix + "useDebugKeystore",
         enabled: false,
@@ -80,7 +93,7 @@ export function configurationFamilies(fields: string[]): ConfigurationFamily[] {
       { parent: "nativeCodeBundleMode", enabled: "wasm", children: ["wasmCompressionMode"] },
     ];
     for (const family of candidates)
-      if (family.parent === field || family.children.includes(field))
+      if ((family.parent === field || family.children.includes(field)) && !found.has(family.parent))
         found.set(family.parent, family);
   }
   return [...found.values()];
@@ -348,7 +361,7 @@ export class ConfigurationOperations implements ConfigurationPort {
 
   async record(
     fields: string[],
-    families = configurationFamilies(fields),
+    families = this.port.fieldFamilies?.(fields) ?? configurationFamilies(fields),
     button?: boolean,
   ): Promise<ConfigurationRecord> {
     const initial = new Map<string, CaseControl | null>(),
@@ -365,6 +378,18 @@ export class ConfigurationOperations implements ConfigurationPort {
         prompts.set(field, await this.alerts(field));
       }
     }
+    if (
+      families.some(
+        (family) =>
+          family.requiresReadableOriginals &&
+          [family.parent, ...family.children].some((field) => !initial.get(field)),
+      )
+    )
+      throw new ConfigurationOperationError(
+        "precondition",
+        "新增联动的原值当前不可读取，不能保证恢复；未修改配置",
+        "blocked",
+      );
     const record: ConfigurationRecord = {
       session: this.context.session,
       platform: this.platform,
@@ -415,6 +440,31 @@ export class ConfigurationOperations implements ConfigurationPort {
   async set(field: string, value: CaseValue, input?: string, enumLabel?: string): Promise<boolean> {
     this.field(field);
     return this.mutate(() => this.port.set(field, value, input, enumLabel));
+  }
+
+  async probe(field: string): Promise<TargetObservation> {
+    this.field(field);
+    await this.context.verify();
+    if (!this.port.probe)
+      throw new ConfigurationOperationError("precondition", "缺少结构化目标探查适配", "blocked");
+    const observed = await this.port.probe(field);
+    await this.context.verify();
+    return observed;
+  }
+  async candidates(field: string): Promise<CandidateObservation> {
+    this.field(field);
+    await this.context.verify();
+    if (!this.port.candidates)
+      throw new ConfigurationOperationError("precondition", "缺少候选观察适配", "blocked");
+    const observed = await this.port.candidates(field);
+    await this.context.verify();
+    return observed;
+  }
+  async selectCandidate(field: string, match: CandidateMatch) {
+    this.field(field);
+    if (!this.port.selectCandidate)
+      throw new ConfigurationOperationError("precondition", "缺少标准候选选择适配", "blocked");
+    return this.mutate(() => this.port.selectCandidate!(field, match));
   }
 
   async restoreControl(field: string, original: CaseControl): Promise<void> {

@@ -58,8 +58,7 @@ export class BuilderConfiguration extends ConfigurationOperations {
       target,
     );
     configuration = new BuilderConfiguration(await bind(page), adapter, bind);
-    // Declared platform-specific keys must really exist with the supported control types.
-    for (const key of Object.keys(target?.fields ?? {})) await configuration.read(key);
+    // Opening binds card -> modal identity. Field existence is a separate explicit observation.
     return configuration;
   }
 

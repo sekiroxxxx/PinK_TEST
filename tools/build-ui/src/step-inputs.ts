@@ -1,6 +1,11 @@
 import { readFile, realpath } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
-import { caseContract, type InputValues, type InputValue } from "./case-contract.js";
+import {
+  caseContract,
+  type InputValues,
+  type InputValue,
+  type FieldType,
+} from "./case-contract.js";
 import {
   discoverScenes,
   confirmScenes,
@@ -68,16 +73,17 @@ export async function loadStepInputs(document: BuildStepsDocument, options: Step
     throw new Error("步骤材料清单不可读取或格式无效（内容已省略）");
   }
   const scenes = await discoverScenes(project);
-  const types = {
+  const types: Record<string, FieldType> = structuredClone({
     ...supportedFieldTypes,
     ...stepObservationFields,
-    ...Object.assign({}, ...(document.targets ?? []).map((t) => t.fields)),
-  };
+  });
+  for (const type of Object.values(types)) type.choices = undefined;
   const references = new Set<string>();
   const cases = await Promise.all(
     document.cases.map(async (c) => {
+      const caseTypes = { ...types, ...document.targets?.find((t) => t.id === c.platform)?.fields };
       const results = await Promise.all(
-        assignments(c).map((inputs) => resolveCaseInputs(inputs, materials, scenes, types)),
+        assignments(c).map((inputs) => resolveCaseInputs(inputs, materials, scenes, caseTypes)),
       );
       const materialRefs = [...new Set(results.flatMap((r) => r.materialRefs))].sort();
       materialRefs.forEach((ref) => references.add(ref));
@@ -178,11 +184,12 @@ export class StepInputs {
   case(caseId: string) {
     const definition = this.#document.cases.find((c) => c.caseId === caseId);
     if (!definition) throw new Error("输入不属于此用例文件");
-    const types = {
+    const types: Record<string, FieldType> = structuredClone({
       ...supportedFieldTypes,
       ...stepObservationFields,
       ...this.#document.targets?.find((t) => t.id === definition.platform)?.fields,
-    };
+    });
+    for (const type of Object.values(types)) type.choices = undefined;
     return new StepCaseInputs(
       structuredClone(this.#preview.scenes),
       this.#materials,

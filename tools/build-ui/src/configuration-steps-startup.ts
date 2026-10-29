@@ -24,6 +24,8 @@ import { createResultCheckpoint, type CheckpointWriteError } from "./result-chec
 import { platformCatalog, platformEntry } from "./platform-catalog.js";
 import { catalogStepResults } from "./catalog-steps-loader.js";
 import { configurationErrorDetail } from "./configuration-diagnostics.js";
+import { buildRunProgress, createProgressOutput } from "./run-progress.js";
+import { readBuilderHome } from "./builder-checks.js";
 
 export async function configurationStepsLaunchPlan(
   loaded: LoadedConfigurationSteps,
@@ -44,7 +46,8 @@ export async function configurationStepsLaunchPlan(
   if (
     loaded.document.cases.some(
       (c) =>
-        !["web-desktop", "web-mobile"].includes(c.platform) &&
+        !("target" in c && c.target?.kind === "builder") &&
+        !["web-desktop", "web-mobile"].includes(c.platform!) &&
         !(
           loaded.document.schemaVersion === 2 && platformCatalog.some((p) => p.id === c.platform)
         ) &&
@@ -201,6 +204,7 @@ export async function runConfigurationStepsFromStartup(
     startedAt: new Date().toISOString(),
     outcome: "incomplete",
     lifecycle: "running",
+    phase: "preflight",
     processes: { workerPid: process.pid, supervisorPid: process.ppid },
     warnings,
     cases: loaded.catalog
@@ -208,7 +212,9 @@ export async function runConfigurationStepsFromStartup(
       : loaded.document.cases.map((c) => ({
           caseId: c.caseId,
           platform: c.platform,
+          ...("target" in c && c.target ? { target: c.target } : {}),
           outcome: "not-run",
+          steps: [],
         })),
   };
   const checkpointWarning = (error: CheckpointWriteError) => {
@@ -221,7 +227,14 @@ export async function runConfigurationStepsFromStartup(
     });
   };
   const checkpoint = createResultCheckpoint(join(directory, "result.json"), checkpointWarning);
-  const publish = (render = false) => checkpoint.publish(data, render);
+  const outputProgress = createProgressOutput();
+  let sequence = 0;
+  const publish = async (render = false) => {
+    const progress = buildRunProgress(loaded, data, ++sequence);
+    data.progress = progress;
+    await checkpoint.publish(data, render);
+    outputProgress(progress);
+  };
   const unsubscribe = stop.subscribe(() => {
     data.interruption = stop.requestInfo;
     data.lifecycle = "stopping";
@@ -241,6 +254,8 @@ export async function runConfigurationStepsFromStartup(
         "blocked",
       );
     }
+    data.phase = "connecting";
+    await publish();
     const connection = await startSession(options, startupSignal, (info) => {
       data.launch = info;
     });
@@ -253,7 +268,9 @@ export async function runConfigurationStepsFromStartup(
     );
     const descriptor = (platform: string) =>
       loaded.document.targets?.find((p) => p.id === platform) ?? platformEntry(platform);
-    const category = descriptor(loaded.document.cases[0].platform).category;
+    const categoryFor = (c: (typeof loaded.document.cases)[number]) =>
+      "target" in c && c.target ? c.target.category : descriptor(c.platform!).category;
+    const category = categoryFor(loaded.document.cases[0]);
     await waitFor(
       "工程构建分类就绪",
       async () =>
@@ -276,9 +293,7 @@ export async function runConfigurationStepsFromStartup(
       );
       builder = builders.get(category)!;
     };
-    for (const category of new Set(
-      loaded.document.cases.map((c) => descriptor(c.platform).category),
-    )) {
+    for (const category of new Set(loaded.document.cases.map(categoryFor))) {
       checkExecutionStop(stop.signal);
       builder = await Builder.open(
         page,
@@ -305,8 +320,8 @@ export async function runConfigurationStepsFromStartup(
           platforms: [
             ...new Set(
               loaded.document.cases
-                .filter((c) => descriptor(c.platform).category === category)
-                .map((c) => c.platform),
+                .filter((c) => c.platform && categoryFor(c) === category)
+                .map((c) => c.platform!),
             ),
           ],
           activate: () => activate(category),
@@ -318,6 +333,8 @@ export async function runConfigurationStepsFromStartup(
       );
     } else if (v2 && loaded.document.cases.some((c) => c.platform === "openpaas"))
       await builders.get(descriptor("openpaas").category)!.installProbe([], true);
+    data.phase = "executing";
+    await publish();
     const result = await runConfigurationSteps(loaded, {
       stopSignal: stop.signal,
       onProgress: async (progress) => {
@@ -328,6 +345,50 @@ export async function runConfigurationStepsFromStartup(
       verifySource: loaded.verifySource,
       evidenceKind: "runtime",
       build: buildRuntime?.port,
+      builderUi: {
+        open: async (target) => {
+          await session!.verify();
+          await activate(target.category);
+          if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
+            throw new ConfigurationOperationError(
+              "context",
+              "公共检查不能接管已有配置弹窗",
+              "stop",
+            );
+          await builder!.home(() => session!.verify());
+        },
+        read: async (target) => {
+          await session!.verify();
+          if (builder !== builders.get(target.category))
+            throw new ConfigurationOperationError("context", "公共检查所在分类已经改变", "stop");
+          return { category: target.category, ...(await builder!.caseDom(readBuilderHome)) };
+        },
+        home: async (target) => {
+          await session!.verify();
+          await activate(target.category);
+          if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
+            throw new ConfigurationOperationError(
+              "context",
+              "公共检查收尾时出现外来配置弹窗",
+              "stop",
+            );
+          await builder!.home(() => session!.verify());
+        },
+      },
+      probePlatform: async (platform) => {
+        await session!.verify();
+        if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
+          throw new ConfigurationOperationError("context", "平台探查不能接管已有配置页", "stop");
+        await activate(descriptor(platform).category);
+        await builder!.home(() => session!.verify());
+        const target = loaded.document.targets?.find((t) => t.id === platform);
+        const observed = await builder!.probePlatform(
+          descriptor(platform).label,
+          target?.homeScope?.readyLabels,
+        );
+        await session!.verify();
+        return observed;
+      },
       closeConfiguration: async (operations) => {
         if (!(operations instanceof BuilderConfiguration))
           throw new Error("关闭操作缺少真实页面适配");
@@ -430,6 +491,8 @@ export async function runConfigurationStepsFromStartup(
     data.fatal = error instanceof Error ? error.message : "步骤启动或收尾失败";
     data.outcome = "failed";
   } finally {
+    data.phase = "cleanup";
+    await publish().catch(() => {});
     const cleanup: Array<{
       resource: string;
       outcome: "passed" | "failed";
@@ -483,6 +546,7 @@ export async function runConfigurationStepsFromStartup(
       data.stopped = true;
     }
     data.lifecycle = "finished";
+    data.phase = "finished";
     data.finishedAt = new Date().toISOString();
     await publish(true);
     console.log(`结果：${join(directory, "result.json")}`);

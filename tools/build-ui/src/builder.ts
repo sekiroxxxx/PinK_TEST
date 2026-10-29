@@ -26,6 +26,7 @@ import { builderUiLabels } from "./builder-ui-labels.js";
 
 interface Probe {
   owner: string;
+  lastTaskRequestSequence?: number;
   openpaasGames?: OpenpaasGame[];
   snapshots: TaskSnapshot[];
   observations: Record<string, TaskObservation>;
@@ -404,6 +405,7 @@ export class Builder {
       probe.listener = (event) => {
         const message = event.data as {
           source?: string;
+          id?: string;
           kind?: string;
           ok?: boolean;
           result?: unknown;
@@ -461,6 +463,17 @@ export class Builder {
           )
         )
           return;
+        // The packaged bridge numbers requests per Webview. A slower old getTasks response
+        // must not overwrite a newer state or contaminate processing/terminal observations.
+        const match = typeof message.id === "string" && /^webview:(\d+)$/.exec(message.id);
+        if (!match) return;
+        const requestSequence = Number(match[1]);
+        if (
+          !Number.isSafeInteger(requestSequence) ||
+          requestSequence <= (probe.lastTaskRequestSequence ?? -1)
+        )
+          return;
+        probe.lastTaskRequestSequence = requestSequence;
         const at = Date.now();
         for (const task of tasks) {
           const observation = (probe.observations[task.id] ??= { firstSeenAt: at });
@@ -471,6 +484,7 @@ export class Builder {
         }
         probe.snapshots.push({
           at,
+          requestSequence,
           tasks: tasks.map((task) => ({
             caseOptions: Object.fromEntries(
               caseKeys.map((path) => {
@@ -669,6 +683,96 @@ export class Builder {
     this.configurationGenerationValue++;
     await this.click("platform", label, undefined, undefined, beforeInput);
     return this.configurationPage();
+  }
+
+  async probePlatform(label: string, readyLabels: string[] = []) {
+    return this.caseDom(
+      (document, label, readyLabels) => {
+        const visible = (el: Element) =>
+          (el as HTMLElement).getClientRects().length > 0 &&
+          el.ownerDocument.defaultView!.getComputedStyle(el).visibility === "visible";
+        // Same owned Builder scope as point(): visible same-origin descendants only.
+        // The home footer and its cards may belong to different nested documents.
+        const documents: Document[] = [];
+        let unreadable = false;
+        const scan = (doc: Document) => {
+          if (documents.includes(doc)) return;
+          documents.push(doc);
+          for (const frame of doc.querySelectorAll<HTMLIFrameElement>("iframe")) {
+            if (!visible(frame)) continue;
+            let child: Document | null;
+            try {
+              child = frame.contentDocument;
+            } catch {
+              child = null;
+            }
+            if (child) scan(child);
+            else unreadable = true;
+          }
+        };
+        scan(document);
+        const query = (selector: string) =>
+          documents.flatMap((doc) => [...doc.querySelectorAll(selector)]);
+        const ready =
+          !query('button[aria-label="Close"]').some(visible) &&
+          query("button").some(
+            (button) =>
+              visible(button) &&
+              [
+                "查看构建记录",
+                "编译与打包结果",
+                "View build history",
+                "Build & Package Results",
+              ].includes(button.textContent?.trim() ?? ""),
+          ) &&
+          !query('[aria-busy="true"],[data-loading="true"]').some(visible);
+        const homes = documents
+          .map((doc) => [...doc.querySelectorAll(".platform-card,.pk-card")])
+          .filter((cards) => cards.length);
+        const all = homes.flat();
+        const named = (name: string) =>
+          all.filter(
+            (card) =>
+              card.querySelector(".platform-card-title,.pk-card-foot")?.textContent?.trim() ===
+              name,
+          );
+        const cards = named(label);
+        const complete =
+          ready &&
+          homes.length === 1 &&
+          !unreadable &&
+          !!readyLabels.length &&
+          readyLabels.every((name) => named(name).length === 1 && visible(named(name)[0]));
+        return {
+          scopeReady: ready,
+          scopeComplete: complete,
+          matchCount: ready ? cards.length : null,
+          presence:
+            !ready ||
+            unreadable ||
+            homes.length > 1 ||
+            cards.length > 1 ||
+            (!cards.length && !complete)
+              ? ("undetermined" as const)
+              : cards.length
+                ? ("present" as const)
+                : ("absent" as const),
+          visible: cards.length === 1 ? visible(cards[0]) : null,
+          readable: false,
+          writable: false,
+          control: "platform-card",
+          reason: !ready
+            ? ("not-ready" as const)
+            : homes.length > 1 || cards.length > 1
+              ? ("ambiguous" as const)
+              : unreadable || (!cards.length && !complete)
+                ? ("incomplete-scope" as const)
+                : undefined,
+        };
+      },
+      label,
+      readyLabels,
+    );
   }
 
   async configurationPage(): Promise<FormView> {

@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Builder } from "./builder.js";
-import { errorMessage, type Task, type TaskObservation } from "./common.js";
+import { errorMessage, type Task, type TaskObservation, type TaskSnapshot } from "./common.js";
 
 export function isTerminal(task: Task): boolean {
   return ["success", "failure", "cancelled", "generated"].includes(task.state);
@@ -46,12 +46,15 @@ export function taskTimeout(
 /** Reads only responses produced by PinK's own UI. UI input remains in the main flow. */
 export class TaskObserver {
   private current = new Map<string, Task>();
-  private latestAt = 0;
+  private snapshots: Array<TaskSnapshot | undefined> = [];
   private stopped = false;
   private runner?: Promise<void>;
   private failure?: string;
 
-  constructor(private readonly builders: Builder[]) {}
+  constructor(
+    private readonly builders: Builder[],
+    private readonly platformsBySource: readonly (readonly string[])[] = [],
+  ) {}
 
   tasks(): Task[] {
     return [...this.current.values()];
@@ -65,19 +68,38 @@ export class TaskObserver {
   }
 
   async poll(): Promise<void> {
-    const snapshots = (await Promise.all(this.builders.map((builder) => builder.latestSnapshot())))
-      .filter((snapshot) => snapshot !== undefined)
-      .sort((a, b) => a.at - b.at);
-    const latest = snapshots.at(-1);
-    if (!latest || latest.at <= this.latestAt) return;
+    const received = await Promise.all(this.builders.map((builder) => builder.latestSnapshot()));
+    let changed = false;
+    for (const [index, snapshot] of received.entries()) {
+      const previous = this.snapshots[index];
+      if (
+        !snapshot ||
+        (previous &&
+          (snapshot.requestSequence !== undefined && previous.requestSequence !== undefined
+            ? snapshot.requestSequence <= previous.requestSequence
+            : snapshot.at <= previous.at))
+      )
+        continue;
+      this.snapshots[index] = snapshot;
+      changed = true;
+    }
+    if (!changed) return;
+    const snapshots = this.snapshots.filter((s): s is TaskSnapshot => !!s);
+    const latest = [...snapshots].sort((a, b) => a.at - b.at).at(-1)!;
     const next = new Map<string, Task>();
-    for (const task of latest.tasks) {
-      const observations = [
-        this.current.get(task.id)?.observation,
-        ...snapshots.map(
-          (snapshot) => snapshot.tasks.find((item) => item.id === task.id)?.observation,
-        ),
-      ].filter((observation) => observation !== undefined);
+    const candidates = new Map(
+      snapshots.flatMap((snapshot) => snapshot.tasks.map((task) => [task.id, task] as const)),
+    );
+    for (const candidate of candidates.values()) {
+      const source = this.platformsBySource.findIndex((platforms) =>
+        platforms.includes(candidate.platform),
+      );
+      const authoritative = source < 0 ? latest : this.snapshots[source];
+      const task = authoritative?.tasks.find((task) => task.id === candidate.id);
+      if (!task) continue;
+      const observations = [this.current.get(task.id)?.observation, task.observation].filter(
+        (observation) => observation !== undefined,
+      );
       const observation = {} as TaskObservation;
       for (const key of ["firstSeenAt", "waitingAt", "processingAt", "terminalAt"] as const) {
         const times = observations.flatMap((value) =>
@@ -88,7 +110,6 @@ export class TaskObserver {
       next.set(task.id, { ...task, observation });
     }
     this.current = next;
-    this.latestAt = latest.at;
   }
 
   start(onUpdate: () => void): void {

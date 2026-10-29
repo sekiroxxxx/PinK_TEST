@@ -1,0 +1,161 @@
+{
+  "kind": "pink-case-composition",
+  "schemaVersion": 1,
+  "sources": [],
+  "fragments": [
+    {
+      "id": "configuration-check",
+      "kind": "nodes",
+      "parameters": {
+        "platform": { "kind": "string" },
+        "name": { "kind": "string" },
+        "expectedName": { "kind": "string" }
+      },
+      "nodes": [
+        {
+          "id": "check",
+          "kind": "flow",
+          "target": { "kind": "platform", "id": { "$param": "platform" } },
+          "before": [
+            {
+              "id": "open",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "config.open",
+              "inputs": {}
+            },
+            {
+              "id": "original",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "record",
+              "inputs": { "page": { "$output": "open" }, "fields": ["name"] }
+            }
+          ],
+          "steps": [
+            {
+              "id": "name",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "set",
+              "inputs": {
+                "page": { "$output": "open" },
+                "field": "name",
+                "value": { "$param": "name" }
+              }
+            },
+            {
+              "id": "read",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "read",
+              "inputs": { "page": { "$output": "open" }, "fields": ["name"] }
+            },
+            {
+              "id": "expected",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "assert",
+              "inputs": {
+                "check": "values",
+                "snapshot": { "$output": "read" },
+                "values": { "name": { "$param": "expectedName" } }
+              }
+            }
+          ],
+          "finally": [
+            {
+              "id": "cleanup",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "config.open",
+              "inputs": {}
+            },
+            {
+              "id": "restore",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "restore",
+              "inputs": { "page": { "$output": "cleanup" }, "record": { "$output": "original" } }
+            },
+            {
+              "id": "close",
+              "kind": "action",
+              "moduleId": "pink-build",
+              "operationId": "config.close",
+              "inputs": { "page": { "$output": "cleanup" } }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "id": "desktop",
+      "kind": "use",
+      "fragmentId": "configuration-check",
+      "arguments": {
+        "platform": "web-desktop",
+        "name": "qa_desktop_composition",
+        "expectedName": "qa_desktop_composition"
+      }
+    },
+    {
+      "id": "mobile",
+      "kind": "use",
+      "fragmentId": "configuration-check",
+      "arguments": {
+        "platform": "web-mobile",
+        "name": "qa_mobile_composition",
+        "expectedName": "qa_mobile_composition"
+      }
+    },
+    {
+      "id": "common-home",
+      "kind": "flow",
+      "target": { "kind": "builder", "category": "X-Device" },
+      "before": [
+        {
+          "id": "open",
+          "kind": "action",
+          "moduleId": "pink-build",
+          "operationId": "builder.open",
+          "inputs": {}
+        }
+      ],
+      "steps": [
+        {
+          "id": "read",
+          "kind": "action",
+          "moduleId": "pink-build",
+          "operationId": "builder.read",
+          "inputs": { "page": { "$output": "open" } }
+        },
+        {
+          "id": "expected",
+          "kind": "action",
+          "moduleId": "pink-build",
+          "operationId": "assert",
+          "inputs": {
+            "check": "builder-state",
+            "snapshot": { "$output": "read" },
+            "expected": {
+              "ready": true,
+              "buttons": { "history": { "visible": true, "disabled": false } }
+            }
+          }
+        }
+      ],
+      "finally": [
+        {
+          "id": "home",
+          "kind": "action",
+          "moduleId": "pink-build",
+          "operationId": "builder.home",
+          "inputs": {}
+        }
+      ]
+    }
+  ]
+}

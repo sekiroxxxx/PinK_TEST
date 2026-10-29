@@ -12,11 +12,15 @@ import {
   type SpecialFieldContract,
 } from "./profiles.js";
 import type { CaseValue } from "./finalized-cases.js";
-import { platformEntry } from "./platform-catalog.js";
+import { platformEntry, platformCatalog } from "./platform-catalog.js";
 import type { ConfigurationTarget } from "./configuration-targets.js";
 import { readStageUi, changeStageUi } from "./stage-ui.js";
 import type { StageView } from "./configuration-stages.js";
 import { configurationUiTitles } from "./builder-ui-labels.js";
+import { StandardFields, type CandidateMatch } from "./standard-fields.js";
+import { configurationFamilies } from "./configuration-operations.js";
+import { supportedFieldTypes } from "./supported-field-types.js";
+import type { StandardFieldTarget } from "./configuration-targets.js";
 
 export interface CaseControl {
   value: CaseValue;
@@ -45,6 +49,44 @@ export class CaseForm {
     private readonly target?: ConfigurationTarget,
   ) {}
 
+  private standard() {
+    return new StandardFields(this.builder, this.signal, this.beforeInput);
+  }
+  private description(key: string): StandardFieldTarget {
+    const declared = this.target?.fields[key];
+    if (declared) return declared;
+    const registered = supportedFieldTypes[key];
+    if (
+      !registered ||
+      !["string", "number", "boolean"].includes(registered.kind) ||
+      registered.sensitive
+    )
+      throw new ConfigurationOperationError("precondition", "此目标缺少标准控件描述", "blocked");
+    return {
+      kind: registered.kind as StandardFieldTarget["kind"],
+      control: registered.choices
+        ? "enum"
+        : registered.kind === "string"
+          ? "text"
+          : (registered.kind as "number" | "boolean"),
+    };
+  }
+  fieldFamilies(fields: string[]) {
+    return configurationFamilies(
+      fields,
+      this.target?.families?.map((family) => ({ ...family, requiresReadableOriginals: true })),
+    );
+  }
+  probe(field: string) {
+    return this.standard().probe(field, this.description(field));
+  }
+  candidates(field: string) {
+    return this.standard().candidates(field, this.description(field));
+  }
+  selectCandidate(field: string, match: CandidateMatch) {
+    return this.standard().select(field, this.description(field), match);
+  }
+
   private click(kind: Parameters<Builder["click"]>[0], label: string): Promise<number> {
     return this.builder.click(kind, label, undefined, undefined, this.beforeInput);
   }
@@ -58,7 +100,7 @@ export class CaseForm {
   }
 
   private hint(key: string): Partial<SpecialFieldContract> {
-    if (this.target) return {}; // Standard fields use their exact observed data-option-key.
+    if (this.target && !platformCatalog.some((entry) => entry.id === this.platform)) return {};
     const p = baseCombinationPlatforms.find((p) => p.id === this.platform)!;
     const base = [
       ...(!platforms.some((entry) => entry.id === this.platform)
@@ -112,6 +154,7 @@ export class CaseForm {
   }
 
   async inspect(key: string): Promise<CaseControl | null> {
+    if (this.target?.fields[key]) return this.standard().inspect(key, this.target.fields[key]);
     if (key === "packages.openpaas.appid" && this.platform === "openpaas") {
       const game = await this.openpaasPage();
       return {
@@ -348,19 +391,6 @@ export class CaseForm {
       key,
       hint,
     );
-    const expected = this.target?.fields[key];
-    if (control && expected) {
-      const kinds =
-        expected.control === "enum"
-          ? ["enum", "select"]
-          : [expected.control === "text" ? "string" : expected.control];
-      if (!kinds.includes(control.kind))
-        throw new ConfigurationOperationError(
-          "precondition",
-          `声明字段与实际控件类型不符：${key}`,
-          "blocked",
-        );
-    }
     return control;
   }
 
@@ -678,6 +708,13 @@ export class CaseForm {
   }
 
   async set(key: string, target: CaseValue, input?: string, enumLabel?: string): Promise<boolean> {
+    if (this.target?.fields[key])
+      return this.standard().set(
+        key,
+        this.target.fields[key],
+        target as string | number | boolean,
+        input,
+      );
     let current = await this.read(key);
     if (key === "packages.openpaas.appid" && this.platform === "openpaas") {
       if (current.value === target) return false;

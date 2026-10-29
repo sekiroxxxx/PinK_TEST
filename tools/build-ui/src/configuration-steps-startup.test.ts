@@ -64,6 +64,7 @@ test("launch plan binds JSON and exact installation/project before any UI connec
       options,
     );
     assert.equal(multi.steps.execution?.maxTasksPerGroup, 2);
+    assert.ok(multi.steps.execution.groups);
     assert.deepEqual(multi.steps.execution?.groups[0].caseIds, [
       "case.web-desktop",
       "case.wechatgame",

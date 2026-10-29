@@ -1,0 +1,10 @@
+{
+  "items": [
+    { "path": ["common-home"] },
+    {
+      "path": ["mobile", "check"],
+      "arguments": { "name": "qa_selected_mobile", "expectedName": "qa_selected_mobile" }
+    },
+    { "path": ["desktop", "check"] }
+  ]
+}

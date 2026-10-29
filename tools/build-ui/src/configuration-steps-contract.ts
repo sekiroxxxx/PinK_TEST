@@ -58,9 +58,10 @@ export interface LoadedConfigurationSteps {
     source: { path: string; sha256: string; revision: string };
     compilationSha256: string;
     inputs: StepInputs["preview"];
-    selection: { cases?: string; groups?: string };
+    selection: { cases?: string; groups?: string; endpoint?: "ui" };
     cases: Array<{
       caseId: string;
+      title?: string;
       platform: string;
       group: string;
       endpoint: string;
@@ -176,7 +177,7 @@ function validateConfigurationStepsV1(
         }
       };
       noReference(value);
-      caseContract.validateValue(key, value, fieldTypes[key], at);
+      caseContract.validateValue(key, value, { ...fieldTypes[key], choices: undefined }, at);
     };
     let record: string | undefined,
       restored = false,
@@ -200,7 +201,10 @@ function validateConfigurationStepsV1(
           const selected = fields(step.fields, `${at}.fields`);
           for (const key of [
             ...selected,
-            ...configurationFamilies(selected).flatMap((f) => [f.parent, ...f.children]),
+            ...configurationFamilies(selected, target?.families).flatMap((f) => [
+              f.parent,
+              ...f.children,
+            ]),
           ])
             recorded.add(key);
           break;
@@ -336,24 +340,32 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
     throw new Error("已加载用例被修改，请重新加载文件");
   if (loaded.inputs && loaded.inputs.preview.documentSha256 !== loaded.documentSha256)
     throw new Error("材料/场景绑定不属于当前步骤文件，请重新加载");
+  const execution: { willSubmit: boolean } & Partial<
+    typeof buildStepScheduling & {
+      groups: ReturnType<typeof buildStepGroups>;
+      associationTimeoutMs: number;
+      queueTimeoutMs: number;
+      buildTimeoutMs: number;
+    }
+  > =
+    document.schemaVersion === 1
+      ? { willSubmit: false }
+      : {
+          willSubmit: document.cases.some((c) => c.steps.some((s) => s.op === "build.submit")),
+          ...buildStepScheduling,
+          groups: buildStepGroups(document.cases),
+          associationTimeoutMs: 30_000,
+          queueTimeoutMs: 1_800_000,
+          buildTimeoutMs: 600_000,
+        };
   return {
     kind: "pink-configuration-steps-plan",
     schemaVersion: document.schemaVersion,
+    capabilityVersion: "2",
     phase: "offline",
     runtimeVerified: false,
     buildSubmitted: false,
-    ...(document.schemaVersion === 2
-      ? {
-          execution: {
-            willSubmit: document.cases.some((c) => c.steps.some((s) => s.op === "build.submit")),
-            ...buildStepScheduling,
-            groups: buildStepGroups(document.cases),
-            associationTimeoutMs: 30_000,
-            queueTimeoutMs: 1_800_000,
-            buildTimeoutMs: 600_000,
-          },
-        }
-      : {}),
+    execution,
     sourceSha256: loaded.sourceSha256,
     documentSha256: loaded.documentSha256,
     ...(loaded.catalog ? { catalog: structuredClone(loaded.catalog) } : {}),

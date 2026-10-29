@@ -152,6 +152,16 @@ test("all-blocked catalog produces a report before any PinK connection and prese
     assert.equal(data.evidenceKind, "offline-preflight");
     assert.equal(data.buildAttempted, false);
     assert.equal(data.cases[0].outcome, "blocked");
+    assert.equal(data.progress.kind, "pink-build-progress");
+    assert.equal(data.progress.schemaVersion, 1);
+    assert.equal(data.progress.lifecycle, "finished");
+    assert.equal(data.progress.summary.total, 1);
+    assert.equal(data.progress.summary.completed, 1);
+    assert.equal(data.progress.summary.passed, 0);
+    assert.equal(data.progress.summary.blocked, 1);
+    assert.equal(data.progress.cases[0].group, "mixed");
+    assert.equal(data.progress.cases[0].status, "blocked");
+    assert.equal(data.progress.artifacts.result, join(result.directory, "result.json"));
     assert.match(data.cases[0].failure.reason, /适用清单/);
     assert.match(
       await readFile(join(result.directory, "report.html"), "utf8"),

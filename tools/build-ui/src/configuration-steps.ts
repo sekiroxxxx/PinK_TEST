@@ -4,6 +4,8 @@ import type { ExecutionContext } from "./configuration-context.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
 import { checkExecutionStop } from "./execution-stop.js";
 import { configurationErrorDetail } from "./configuration-diagnostics.js";
+import type { TargetObservation } from "./standard-fields.js";
+import type { BuilderTarget, BuilderUiPort } from "./builder-checks.js";
 import type {
   ConfigurationOperations,
   ConfigurationRecord,
@@ -34,7 +36,11 @@ export interface ConfigurationStepResult {
 }
 export interface ConfigurationStepCaseResult {
   caseId: string;
-  platform: string;
+  platform?: string;
+  target?: BuilderTarget;
+  lifecycle?: "pending" | "running" | "finished";
+  startedAt?: string;
+  finishedAt?: string;
   outcome: Outcome;
   steps: ConfigurationStepResult[];
   failure?: ConfigurationStepResult["error"];
@@ -47,6 +53,7 @@ export interface ConfigurationStepCaseResult {
     attempted: boolean;
     taskId?: string;
     state?: string;
+    progress?: number;
     message?: string;
     submittedAt?: number;
     collected: boolean;
@@ -65,6 +72,8 @@ export interface ConfigurationStepsEnvironment {
   /** Supplies an already verified UI adapter; no startup or build API is part of this executor. */
   openConfiguration(platform: string): Promise<ConfigurationOperations>;
   evidenceKind: "offline-fixture" | "runtime";
+  probePlatform?(platform: string): Promise<TargetObservation>;
+  builderUi?: BuilderUiPort;
   closeConfiguration?(operations: ConfigurationOperations): Promise<void>;
   build?: BuildStepsPort;
   captureFailure?(
@@ -110,6 +119,8 @@ async function runCase(
   const result: ConfigurationStepCaseResult = {
     caseId: c.caseId,
     platform: c.platform,
+    lifecycle: "running",
+    startedAt: new Date().toISOString(),
     outcome: "passed",
     steps: c.steps.map((s) => ({
       stepId: s.id,
@@ -318,6 +329,8 @@ export async function runConfigurationSteps(
         : undefined,
     });
     cases.push(result);
+    result.lifecycle = "finished";
+    result.finishedAt = new Date().toISOString();
     stopped = result.stopFollowingCases;
   }
   return {

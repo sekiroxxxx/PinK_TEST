@@ -11,13 +11,14 @@ import type { ConfigurationStepCaseResult } from "./configuration-steps.js";
 /** Catalog and hand-authored steps converge here, before the existing launch/plan/execution code. */
 export async function loadCatalogSteps(
   file: string,
-  options: StepInputOptions & { cases?: string; groups?: string } = {},
+  options: StepInputOptions & { cases?: string; groups?: string; endpoint?: "ui" } = {},
 ): Promise<LoadedConfigurationSteps> {
   const migration = await catalogToSteps(file, options);
   const document: BuildStepsDocument = migration.document ?? {
     kind: "pink-configuration-steps",
     schemaVersion: 2,
     cases: [],
+    ...(migration.targets.length ? { targets: migration.targets } : {}),
   };
   const sources = [{ file: migration.source.path, sha256: migration.source.sha256 }];
   if (options.cases?.split(",").some((id) => id.trim().startsWith("FORM-"))) {
@@ -39,10 +40,11 @@ export async function loadCatalogSteps(
       source: migration.source,
       compilationSha256: migration.integrity.sha256,
       inputs: migration.inputs,
-      selection: { cases: options.cases, groups: options.groups },
+      selection: { cases: options.cases, groups: options.groups, endpoint: options.endpoint },
       cases: migration.cases.map(
-        ({ caseId, platform, group, endpoint, status, sourceCaseIds, gaps }) => ({
+        ({ caseId, title, platform, group, endpoint, status, sourceCaseIds, gaps }) => ({
           caseId,
+          title,
           platform,
           group,
           endpoint,

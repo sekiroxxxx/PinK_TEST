@@ -18,7 +18,7 @@ import { formToSteps } from "./form-to-steps.js";
 /** The shared catalog compiler; unsupported checks remain explicit blockers. */
 export async function catalogToSteps(
   file: string,
-  options: StepInputOptions & { cases?: string; groups?: string } = {},
+  options: StepInputOptions & { cases?: string; groups?: string; endpoint?: "ui" } = {},
 ) {
   const path = resolve(file),
     bytes = await readFile(path);
@@ -28,7 +28,21 @@ export async function catalogToSteps(
   } catch {
     throw new Error("四组用例不是有效 JSON（内容已省略）");
   }
+  return compileCatalogDocument(raw, options, { path, bytes });
+}
+
+/** The same compiler for a selected in-memory source; no temporary source file or source mutation. */
+export async function compileCatalogDocument(
+  raw: unknown,
+  options: StepInputOptions & { cases?: string; groups?: string; endpoint?: "ui" } = {},
+  source?: { path: string; bytes: Uint8Array },
+) {
+  const path = source?.path ?? "inline:catalog";
+  const bytes = source ? Buffer.from(source.bytes) : Buffer.from(JSON.stringify(raw));
   const catalog = validateExecutableCatalog(raw);
+  if (options.endpoint !== undefined && options.endpoint !== "ui")
+    throw new Error("endpoint 覆盖仅支持 ui；省略时沿用原定义");
+  const targets = catalog.targets ?? [];
   let materials;
   try {
     materials = await readFinalMaterials(options.materials);
@@ -40,6 +54,7 @@ export async function catalogToSteps(
     catalogPath: path,
     project: options.project,
     captureInputs: true,
+    endpoint: options.endpoint,
   });
   const capabilities = describeFieldCapabilities().supportedFields;
   const cases = [];
@@ -64,13 +79,14 @@ export async function catalogToSteps(
     for (const [field, value] of Object.entries(values)) {
       const capability = capabilities.find((c) => c.key === field);
       if (
-        !capability ||
-        ![
-          "set-target-and-read-back",
-          "scene-selection",
-          "google-icon",
-          "select-existing-game",
-        ].includes(capability.operation)
+        (!capability && !targets.find((t) => t.id === item.platform)?.fields[field]) ||
+        (capability &&
+          ![
+            "set-target-and-read-back",
+            "scene-selection",
+            "google-icon",
+            "select-existing-game",
+          ].includes(capability.operation))
       )
         gaps.push({ kind: "ui-adapter", reason: `专用操作未迁移：${field}` });
       if (
@@ -92,6 +108,7 @@ export async function catalogToSteps(
     const document: BuildStepsDocument = {
       kind: "pink-configuration-steps",
       schemaVersion: 2,
+      ...(targets.length ? { targets } : {}),
       cases: [definition.formValidation ? formToSteps(item) : catalogStepSequence(item)],
     };
     try {
@@ -114,6 +131,7 @@ export async function catalogToSteps(
     ) as InputValues;
     cases.push({
       caseId: item.caseId,
+      title: item.title ?? item.caseId,
       platform: item.platform,
       group: definition.group,
       endpoint: definition.endpoint,
@@ -143,7 +161,7 @@ export async function catalogToSteps(
   }
   // Discover project resources and read material files once for the selected set.
   const inputs = await loadStepInputs(
-    { kind: "pink-configuration-steps", schemaVersion: 2, cases: drafts },
+    { kind: "pink-configuration-steps", schemaVersion: 2, targets, cases: drafts },
     options,
   );
   const inputPreview = inputs.preview;
@@ -157,7 +175,7 @@ export async function catalogToSteps(
   }
   const ready = cases.flatMap((c) => c.document?.cases ?? []);
   const document: BuildStepsDocument | undefined = ready.length
-    ? { kind: "pink-configuration-steps", schemaVersion: 2, cases: ready }
+    ? { kind: "pink-configuration-steps", schemaVersion: 2, targets, cases: ready }
     : undefined;
   if (document) validateConfigurationSteps(document);
   return sealPlan({
@@ -166,9 +184,12 @@ export async function catalogToSteps(
     phase: "offline",
     runtimeVerified: false,
     buildSubmitted: false,
+    targets,
     source: { path, sha256: contentHash(bytes), revision: catalog.revision },
     inputs: inputPreview,
     execution: {
+      endpointOverride: options.endpoint,
+      willSubmit: !!document?.cases.some((c) => c.steps.some((s) => s.op === "build.submit")),
       ...buildStepScheduling,
       groups: buildStepGroups(
         cases.filter((c) => c.document).map((c) => ({ caseId: c.caseId, platform: c.platform })),

@@ -16,6 +16,7 @@ const labels: Record<string, string> = {
   "not-applicable": "不适用",
   incomplete: "未全部完成",
   running: "进行中",
+  pending: "待执行",
   skipped: "已跳过",
 };
 const stages: Record<string, string> = {
@@ -48,12 +49,14 @@ export async function writeResultReport(resultPath: string): Promise<string> {
     : "PinK 构建测试报告";
   const entries = (Array.isArray(data.cases) ? list(data.cases) : list(data.checks)).map((item) => {
     if (!configurationSteps) return item;
+    const progress = list(record(data.progress).cases).find((c) => c.caseId === item.caseId);
     const failures = [
       ...(item.openingFailure ? [record(item.openingFailure)] : []),
       ...list(item.steps).filter((s) => s.error),
     ];
     return {
       ...item,
+      ...(progress ? { outcome: text(progress.status) } : {}),
       taskId: list(item.tasks)
         .map((t) => text(t.taskId))
         .filter(Boolean)

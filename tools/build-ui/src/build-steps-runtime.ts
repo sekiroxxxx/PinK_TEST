@@ -71,7 +71,10 @@ export async function createStepBuildPort(
     initialIds = ids;
     for (const task of baseline) baselineIds.add(task.id);
   }
-  const observer = new TaskObserver(bindings.map((binding) => binding.builder));
+  const observer = new TaskObserver(
+    bindings.map((binding) => binding.builder),
+    bindings.map((binding) => binding.platforms),
+  );
   await observer.poll();
   observer.start(() => {});
   const port: BuildStepsPort = {

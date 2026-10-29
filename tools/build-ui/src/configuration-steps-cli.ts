@@ -7,6 +7,12 @@ import { superviseSteps } from "./steps-process.js";
 import { ExecutionStop } from "./execution-stop.js";
 import { configurationStepsPlan, loadConfigurationSteps } from "./configuration-steps-contract.js";
 import {
+  identifyNativeDocument,
+  loadNativeCases,
+  describeNativeCaseCapabilities,
+} from "./native-case-contract.js";
+import { readFile } from "node:fs/promises";
+import {
   configurationStepsLaunchPlan,
   verifyConfigurationStepsPlan,
   runConfigurationStepsFromStartup,
@@ -17,6 +23,9 @@ async function main() {
   const { values } = parseArgs({
     options: {
       file: { type: "string" },
+      input: { type: "string" },
+      endpoint: { type: "string" },
+      describe: { type: "boolean" },
       catalog: { type: "string" },
       cases: { type: "string" },
       groups: { type: "string" },
@@ -33,8 +42,31 @@ async function main() {
       "expected-plan": { type: "string" },
     },
   });
-  if (!!values.file === !!values.catalog)
-    throw new Error("需要且仅能选择 --file <steps.json> 或 --catalog <四组.json>");
+  if (values.describe) {
+    if (
+      Object.keys(values).some(
+        (key) => !["describe", "output", "port", "results", "configuration-timeout"].includes(key),
+      )
+    )
+      throw new Error("describe 不能与执行或用例输入参数混用");
+    const json = JSON.stringify(describeNativeCaseCapabilities(), null, 2) + "\n";
+    if (values.output) await writeFile(values.output, json, { flag: "wx" });
+    else process.stdout.write(json);
+    return;
+  }
+  if ([values.file, values.catalog, values.input].filter(Boolean).length !== 1)
+    throw new Error("需要且仅能选择 --input、--file 或 --catalog");
+  if (values.input) {
+    let raw: unknown;
+    try {
+      raw = JSON.parse((await readFile(values.input, "utf8")).replace(/^\uFEFF/, ""));
+    } catch {
+      throw new Error("原生用例不可读取或不是有效 JSON（内容已省略）");
+    }
+    if (identifyNativeDocument(raw).format === "catalog") values.catalog = values.input;
+  }
+  if (values.endpoint !== undefined && (values.endpoint !== "ui" || !values.catalog))
+    throw new Error("endpoint 仅支持 catalog 的 ui 终点覆盖");
   if (
     values.catalog &&
     !values.run &&
@@ -48,6 +80,7 @@ async function main() {
       materials: values.materials,
       cases: values.cases,
       groups: values.groups,
+      endpoint: values.endpoint as "ui" | undefined,
     });
     const json = JSON.stringify(plan, null, 2) + "\n";
     if (values.output) await writeFile(values.output, json, { flag: "wx" });
@@ -73,11 +106,17 @@ async function main() {
           materials: values.materials,
           cases: values.cases,
           groups: values.groups,
+          endpoint: values.endpoint as "ui" | undefined,
         })
-      : await loadConfigurationSteps(values.file!, {
-          project: values.project,
-          materials: values.materials,
-        });
+      : values.input
+        ? await loadNativeCases(values.input, {
+            project: values.project,
+            materials: values.materials,
+          })
+        : await loadConfigurationSteps(values.file!, {
+            project: values.project,
+            materials: values.materials,
+          });
     if (values.run || values.preview || values["check-plan"]) {
       if (!values.pink || !values.project) throw new Error("步骤启动计划需要指定 pink 和 project");
       const plan = await configurationStepsLaunchPlan(loaded, {

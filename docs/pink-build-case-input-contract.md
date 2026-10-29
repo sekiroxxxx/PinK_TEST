@@ -2,6 +2,292 @@
 
 2026-10-21：已接入现有四组工具并完成离线验证，随后完成五项真实样本，以及 web-desktop 冷启动和已有实例接入验收。离线计划仍不代表 UI 或构建通过；实机结果按具体用例区分，不改引擎设置、不验证产物。
 
+## 组合用例正式合同（2026-10-28）
+
+本批新增有限的用例组装层，复用原生加载、Catalog 编译、v2 依赖校验、两项调度和执行器。组合定义是编辑输入，不是新的执行协议：先组装成原生 v2，再保存、预览、校验计划并执行。能力总版本仍为 `2`；组合定义、组装结果和组合能力各自使用 schemaVersion `1`。本批只有离线证据，尚未完成新组合入口的 PinK 实机验收。
+
+### 模块导出与文件
+
+Node.js 24+ 宿主从 `tools/build-ui/dist/native-case-contract.js` 导入：
+
+| 导出                                                                       | 合同                                                                                                   |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| `describeCaseComposition()`                                                | 返回组合结构 JSON Schema、选择 Schema、参数绑定、操作及公共页面边界；不读取文件或连接 PinK             |
+| `createCaseComposition(document, {sourceId?})`                             | 校验原生 Catalog/v1/v2，复制为 sources，生成逐条原生用例引用；不编译或执行                             |
+| `await composeNativeCases(definition, selection?, {project?, materials?})` | 解析引用、参数、覆盖和顺序，复用现有编译及依赖检查，返回组装结果；Catalog 的编译可能读取所选工程及材料 |
+| `mapCompositionResults(assembly, rawResult)`                               | 核对派生文档和映射身份后，把原始 case/step 结果关联回引用实例；不把未执行项补成通过                    |
+
+上述函数同时由 `describeNativeCaseCapabilities().composition` 描述。类型从同一模块再导出，包括 `CaseComposition`、`CompositionSelection`、`CaseAssembly`、`CompositionOrigin`、`CompositionDiagnostic` 及动作、片段、节点和参数类型。动作参数仍读取既有 `fields.steps.operations[].parameters` / `assertions[].parameters`；不在前端另建操作白名单。
+
+`describeCaseComposition().schema` 为 draft 2020-12 结构 Schema，`.selectionSchema` 描述本轮选择；二者辅助编辑，绑定、控件合同和步骤生命周期以 `composeNativeCases` 的语义校验为准。**组合 JSON 不可直接传给 CLI `--input`**，宿主必须先组装，再将 `assembly.document` 另存为原生 `cases.json`，交给已有 `--file` / `--input` 和 `--expected-plan` 入口。
+
+### 编辑描述与诊断补充（2026-10-29，源码待刷新）
+
+本批只在源码增加可选描述和诊断字段，保持既有输入、执行、恢复、哈希和结果合同不变，能力总版本仍为 2。**没有刷新 dist**，前端读取当前已编译模块时尚不会获得这批新增字段；需在后续获准刷新编译产物后消费。本批只做类型、格式静态检查，不运行测试、执行器 CLI、PinK、构建或打包，不据此声称功能验收通过。
+
+`describeNativeCaseCapabilities().fields.steps` 的编辑描述增加：
+
+| 字段                                                  | 含义和限制                                                                                                                                                                                                                      |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `operations[].targetKinds` / `allowedPhases`          | 目标为 platform/builder，位置为 before/steps/finally。restore、stage.restore、builder.home 仅 finally；config.open/close 可用于主链和收尾。before 仍按现有机制展开进原生 steps，放置合法不代表依赖成立                          |
+| `assertions[].targetKinds` / `allowedPhases`          | builder-state 只适用 builder，其他检查适用 platform；均只在 before/steps。assert 操作本身可以用于两类目标，须继续按选中的检查类型过滤                                                                                           |
+| `operations[].references` / `assertions[].references` | 每项包含 inputPath/type/source/scope/producers，可选 when。inputPath 相对动作 inputs，`*` 表示数组项；when 表示当前动作的分支条件。source=step-output 或 field-description，后者从本目标字段描述取候选，不是步骤输出            |
+| `references[].producers`                              | `{operationId,when?}` 是可提供该引用类型的操作；producer.when 是生产操作条件。read(scope=build) 还可提供 build-configuration-snapshot，assert(check=hidden) 可提供 hidden-assertion。列表描述类型候选，不保证某个实例当前仍有效 |
+| `referencePolicy`                                     | 步骤输出限同一 flow 实例，生产者须在展开后位于消费者之前；字段限当前 case 目标。页面寿命、快照修订、平台/任务归属仍交由原生校验；不能据类型候选直接判定通过                                                                     |
+
+`describeCaseComposition()` 增加以下可消费字段：
+
+- `templates`：模块拥有的工具模板数据，包含 id/title/description/parameters/definition。首批 configuration-check 为既有“名称配置→回读→独立预期→恢复关闭”片段加一处实例，builder-home 为既有公共主页检查；均不提交构建，不是原生用例自动拆链接口。
+- `templates[].parameters`：key/title/required/schema/nodePath/inputPath，以及可选 candidates。参数位置先从模板 definition.nodes 按 nodePath 找到节点，再按 inputPath 读取和填写；初始值以 definition 为准。配置模板的三个参数为 platform/name/expectedName，公共模板为 category。设置值与预期分别维护，不能自动同步。
+- `templatePolicy`：前端复制正式定义后，按已有组合数据规则处理根节点/片段 ID 冲突；重命名片段时同步 use.fragmentId。nodePath 相对模板自身，插入后须随节点映射更新。内置平台 candidates 是静态提示，不证明当前版本存在或可构建，也不排除已有标准目标描述；仍须 compose 和运行时核对。
+- `parameters.bindings`：声明 `$param` 的片段参数作用域和 `$output` 的相对节点路径；输出引用是操作节点引用，不是返回对象的属性路径，跨 case 禁止。
+- `selection.rules`：caseRef.atomic=true；flow 只选择 steps 的直接子动作或动作片段，before/finally 必带；多后代分组不能附加单例覆盖；重复实例须有独立 instanceId。
+- `editableOverrides`：列出 arguments、values、expectedValues、stepInputs 的位置、适用节点和限制。arguments 仍按已绑定值的类型检查；offerReferenceKindExchange=false 表示编辑器本批不提供普通值与材料/场景引用互换，不表示新增了执行侧校验规则。stepInputs 不可覆盖 id/op。
+- `diagnostics`：说明现有必需字段及新增可选 inputPath/missingReferences。已有 code/message/nodeId/instancePath/phase 均保留；phase 仍为粗粒度，不将其解释为精确运行阶段。
+
+diagnostics 的 `inputPath:(string|number)[]` 相对 instancePath 定位的节点，或该实例的本轮覆盖项；例如动作参数为 `["inputs","snapshot"]`，实例参数为 `["arguments","name"]`。`missingReferences` 每项为 `{kind:"parameter"|"output",name?,instancePath?}`；参数缺失提供 name，输出缺失提供绝对动作实例路径。不包含秘密输入值。
+
+本批只在组装器已明确掌握的位置补齐这些字段：缺少/错误参数、未选入的输出节点、未知操作及无法唯一匹配的步骤覆盖。不从中文异常消息推导缺依赖；未结构化的原生生命周期错误继续定位到动作或整个 flow，前端须保留原诊断显示。
+
+例如只选断言、漏选其回读时，可以返回如下结构（说明格式，不代表本批实测）：
+
+```json
+{
+  "severity": "error",
+  "code": "dependency",
+  "message": "输出引用的节点未进入本轮操作链",
+  "nodeId": "expected",
+  "instancePath": ["mobile", "check", "expected"],
+  "phase": "native-validation",
+  "inputPath": ["inputs", "snapshot"],
+  "missingReferences": [
+    { "kind": "output", "instancePath": ["mobile", "check", "read"] }
+  ]
+}
+```
+
+编辑仍直接调用已有 `authorAutomation(action:"compose")` 取得结构化结果；宿主 preview 独立重组装、冻结快照。无需新 IPC 错误协议或第二套结果映射。本批没有新增原生用例自动拆链、历史页面动作、动态候选探查或 UI 操作。
+
+### 定义、复用与本轮选择
+
+组合定义为 `{kind:"pink-case-composition",schemaVersion:1,sources,fragments,targets?,nodes}`。sources 是 `{id,document}` 的原生文档快照；targets 复用现有标准平台描述。
+
+| 节点       | 内容及边界                                                                                                   |
+| ---------- | ------------------------------------------------------------------------------------------------------------ |
+| `group`    | `id/nodes`，可嵌套；用于有序组织，不凭显示名称执行                                                           |
+| `case-ref` | `id/sourceId/caseId`，引用完整原生用例；可声明 `endpoint:"ui"`，但只适用于 Catalog；不删原生前置、断言或收尾 |
+| `flow`     | `id/target/before?/steps/finally/onFailure?`，组合现有动作，依赖仍须成立                                     |
+| `use`      | `id/fragmentId/arguments?`，参数化引用；每处引用有独立实例路径，不共享运行中的页面或记录                     |
+
+片段分 `kind:"nodes"` 和 `kind:"actions"`。前者包含 nodes，后者包含 before?/steps/finally?，只能分别用在节点或操作位置。动作格式是 `{id,kind:"action",moduleId:"pink-build",operationId,inputs}`；operationId 只能是执行侧已有操作。新控件或新业务行为仍需执行侧适配，不能通过 JSON 自授脚本、任意选择器或任意点击。
+
+参数声明为 `{kind,default?,references?}`，kind 为 string/number/boolean/array/object/output；文件或场景参数需要允许对应的 `references:["material"|"scene"]`。输入中 `{$param:"name"}` 绑定参数，`{$output:"open"}` 引用当前片段作用域内的操作输出，跨子片段可用 `{$output:["child","read"]}`。既有 `$material/$scene` 保留给现有输入解析层处理；不新增表达式、分支或循环解释器。
+
+本轮选择为 `{items:[{path,instanceId?,arguments?,values?,expectedValues?,stepInputs?,steps?}]}`：
+
+- `path` 是包含每处 use 实例的节点 ID 路径；items 顺序就是执行顺序。选 group 会包含后代，用一次选择覆盖多个用例时不能同时附加参数或局部步骤覆盖。
+- 省略 selection 时按定义顺序展开全部完整用例；空选择报错。重复运行同一路径必须给不同 instanceId。
+- `arguments` 修改声明参数；`case-ref` 的 `values/expectedValues` 只覆盖已有可赋值/可断言字段，不能删除隐藏或专项检查。`stepInputs` 只覆盖一个唯一动作的输入，不能改 id/op。
+- `steps` 仅用于显式 flow 的主步骤或动作片段引用，按给定顺序选择；before 和 finally 始终保留。缺依赖时返回定位诊断，不自动补动作或跳过断言。原生 case-ref 始终是原子用例，不能局部删步骤。
+- 动作片段的清理在调用链末尾按逆调用顺序展开；嵌套片段先内后外，再执行 flow 自身 finally。最后仍经原生 v2 生命周期校验，非法恢复顺序不会进入执行。
+
+共享引用与独立复制有区别：复制 use/case-ref 仍依赖同一来源；需要脱离来源时，先组装所选实例，再把生成的原生 v2 快照通过 `createCaseComposition(snapshot,{sourceId})` 保存为新来源。以后修改原片段不会改变该快照。
+
+### 平台外的公共构建页面检查
+
+显式 flow 支持 `{kind:"builder",category:"X-Device"|"X-Application"}` 目标，不借用某个平台身份。对应原生 v2 case 使用 `target`，省略 `platform`，不能同时提供两者。
+
+首批公共操作仅为 `builder.open` → `builder.read` → `assert/check:"builder-state"`，finally 必须是一次 `builder.home`。读取固定的 history/build-all 两个入口；expected 支持 `{ready?:boolean,buttons?:{history?:{visible?,disabled?},"build-all"?:{visible?,disabled?}}}`，预期必须明确且为布尔值。
+
+读取返回 `category/ready/view/buttons`；按钮提供 visible、disabled（不能唯一确认时为 null）、matchCount。页面未就绪或控件多匹配为 blocked，回读后现场漂移为 stop，可靠观察与预期不符为 failed。此入口只对已就绪主页作检查，不把加载中或定位不明当成“不存在”。不会点击“全部构建”、触发阶段执行或修改平台配置；历史搜索、筛选和记录检查仍在原专项入口，本批未迁移为可组合操作。
+
+公共检查是调度屏障：前一组任务先收尾，公共检查单独执行，后续平台继续每组最多两项。计划、进度和原始结果携带 target；公共项不伪造 platform/platformLabel，消费者需允许这两个字段缺省。
+
+### 派生快照、错误与结果映射
+
+组装返回 `{kind:"pink-case-assembly",schemaVersion:1,definitionSha256,selectionSha256,documentSha256?,mappingSha256?,document?,caseIds,willSubmit,sourceMap,diagnostics}`。任一错误都会清空可执行集合和映射，并省略 document；不能拿成功的子集悄悄继续。diagnostics 提供 code/message/nodeId?/instancePath/phase，供编辑器定位；不是执行通过证据。
+
+来源映射逐项提供派生 caseId、nodeId、instanceId、instancePath、可选 sourceId/sourceCaseId，以及每步的 stepId/nodeId/instancePath/phase/sourceStepId?。case/step ID 由模块命名空间化，防止同一片段多次引用时串用任务、记录或结果。
+
+宿主须从定义、选择和环境重新组装，不接受渲染层自报的 document 或 sourceMap 作为执行事实。保存派生 `cases.json` 时，同时保存 assembly（包含 sourceMap）及本轮定义/选择快照；原生文件中不塞入编辑器字段。运行前仍重新预览并核对 expected-plan。
+
+- `documentSha256` 是解析后原生文档的 valueHash，须与原始 result.json 的 `documentSha256` 一致；不是文件字节 sourceSha256，也不是 planSha256。
+- `mappingSha256` 绑定 sourceMap、documentSha256、definitionSha256 和 selectionSha256；任何映射改动都需要重新组装。
+- `mapCompositionResults` 拒绝未知或重复用例、未知步骤和身份不符的结果；只允许执行器已定义的中断及提交收集清理记录。它保留真实结果和失败，不把过程结束当作通过，也不合并历史通过。
+- willSubmit 来自生成的 build.submit；它不是“已提交”。工程、材料绑定及启动身份仍进入原有计划合同，组装成功不代表运行环境已齐备。
+
+### 离线样本与证据边界
+
+样本为 `tools/build-ui/fixtures/case-composition/reuse.json` 和同目录 `selection.json`：同一配置检查片段用于 Web 桌面、Web 手机，平台公共主页检查单独成项；选择样本改变顺序并覆盖手机端名称。这份样本只配置和检查，willSubmit=false。
+
+```js
+import { readFile } from "node:fs/promises";
+import { composeNativeCases } from "./tools/build-ui/dist/native-case-contract.js";
+
+const definition = JSON.parse(
+  await readFile(
+    "./tools/build-ui/fixtures/case-composition/reuse.json",
+    "utf8",
+  ),
+);
+const selection = JSON.parse(
+  await readFile(
+    "./tools/build-ui/fixtures/case-composition/selection.json",
+    "utf8",
+  ),
+);
+const assembly = await composeNativeCases(definition, selection);
+if (assembly.diagnostics.length)
+  throw new Error("请按 diagnostics 修正用例，不能执行部分结果");
+// 宿主将 assembly.document 保存为原生 cases.json，assembly 另存供结果映射。
+```
+
+组合定向检查覆盖参数化多次引用、操作片段、局部选择和依赖错误、预期失败后恢复/继续、清理失败后停止、嵌套清理、Catalog 原编译器复用、原生 v1/v2、独立快照和结果身份校验。外部 DOM/控件使用离线夹具；组装器、校验器、配置操作和执行调度调用实际实现。另核对固定公共按钮的真实读取函数在隐藏、加载、重复控件及弹窗存在时的判定。已有未受影响检查复用；没有连接 PinK、提交构建或验证产物，不能据此宣布新入口的实机链路通过。
+
+## 原生用例与仅配置终点正式合同（2026-10-27）
+
+当前能力版本为 `2`，继续采用原生 CatalogDocument/1、步骤 v1/v2。下方早期实施记录中的固定目标限制、字符串枚举限制和 v1 缺少 `execution` 的描述，以本节为准。本批仅离线验证，不启动/连接 PinK、不提交构建、不修改前端、SDK 或引擎设置。
+
+### 原生加载、保存与顺序
+
+Node.js 24+ 宿主继续调用 `tools/build-ui/dist/configuration-steps-cli.js`。新增 `--input <原生.json>` 自动识别；原有 `--catalog`、`--file` 保留，三个输入参数只能选一个。
+
+| 输入              | 识别和路由                                                                        | 执行定义                                                                                   |
+| ----------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
+| CatalogDocument/1 | 无 kind，具有 templates/platforms/fieldTypes/conditionalScenarios；路由 --catalog | 保留四组和 variants；cases/groups 只筛选                                                   |
+| 步骤 v1           | kind=pink-configuration-steps，schemaVersion=1；路由 --file                       | cases/steps 顺序，隐式打开和关闭；记录后末尾恢复，失败也恢复；启动限单平台，不支持材料引用 |
+| 步骤 v2           | 同一 kind，schemaVersion=2；路由 --file                                           | cases/steps/finally 顺序，显式页面和恢复；跨平台每组最多两项，重复平台先收尾               |
+
+不按文件名或 revision 猜格式，不在校验失败后降级重试。步骤不能套成旧四组或文字描述。步骤文件不接受 cases/groups/endpoint 改写范围或步骤。
+
+宿主可导入 `dist/native-case-contract.js`：
+
+| 导出                                                          | 输入 → 输出                                                                              |
+| ------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| identifyNativeDocument(value)                                 | 原生对象 → format/schemaVersion/cliArgument；仅识别，不证明语义合法                      |
+| validateNativeDocument(value)                                 | 原生对象 → 上述标识及校验后 document；不转成另一格式                                     |
+| serializeNativeDocument(value)                                | 校验并输出原生 JSON，保留顺序、目标、机器类型和引用                                      |
+| loadNativeCases(file, options)                                | 路由现有加载器；选项 project/materials/cases/groups/endpoint，后三项仅用于 Catalog       |
+| configurationCheckDocument({caseId,platform,values,targets?}) | 模块生成原生 v2 默认序列：打开→就绪→记录→按输入顺序设置/就绪→回读→断言→finally 恢复/关闭 |
+| describeNativeCaseCapabilities()                              | 返回格式、目标 schema、动作参数、依赖及观察合同，不访问 PinK                             |
+
+CLI `--describe [--output <新文件>]` 输出同一份 `kind=pink-native-case-capabilities/schemaVersion=1/capabilityVersion=2`。目标编辑读取 `targetsSchema`；v1 参数读取 `formats[]` 内自己的 capabilities；v2 读取 `fields.steps.operations[].parameters` 和 `assertions[].parameters`。参数是 JSON Schema 描述，引用附 x-reference；保存和执行语义仍调用模块校验，不复制前端白名单或恢复算法。
+
+Catalog 可选 `executionOrder:string[]`：列出的确切展开 caseId 优先执行，其余保持原展开顺序；不改变选择范围。目录组织、折叠和拖动仅影响展示，除非同步修改原生定义。`--cases` 参数顺序不是执行排序，最终顺序和分组以预览计划为准。
+
+### 同一组合仅配置检查
+
+新增 `--endpoint ui`，仅覆盖 Catalog 普通发布、调试、混合组合及其变体；省略保持原构建语义。条件/反向专项沿用自身终点。执行侧在编译前选择终点，生成记录、配置、回读/断言和恢复，前端不删改构建步骤。
+
+UI 终点不生成构建快照、提交、等待或构建结果断言，不统一要求 SDK 可构建、构建按钮启用、阶段仅连接构建或任务观察器。仍保留程序/工程/页面身份、范围就绪、唯一目标、控件类型、可编辑性，以及本次设置/恢复所需的场景、文件、账号和适用性。组合填写签名、JSON 或游戏选择时仍须对应材料；未开放与人工构建并发，任务文件非预期变化保护继续生效。
+
+所有合法原生格式的启动计划明确提供 `steps.execution.willSubmit`：v1 校验后固定 false，v2/Catalog 按最终步骤计算。顶层 buildSubmitted=false 只表示尚未提交，不能证明以后不会构建。宿主继续要求 willSubmit===false，并拒绝构建操作；缺字段的旧计划重新预览，不放宽拦截。终点、源定义、目标、顺序、输入和环境进入现有哈希；运行仍须 expected-plan。
+
+```powershell
+# 在 PinK-Test 根目录；以下均离线
+node .\tools\build-ui\dist\configuration-steps-cli.js --describe
+node .\tools\build-ui\dist\configuration-steps-cli.js --input <用例.json>
+node .\tools\build-ui\dist\configuration-steps-cli.js --catalog <四组.json> --cases review.publish.web-desktop --endpoint ui --pink <PinK.exe> --project <工程> --preview --output <新计划.json>
+```
+
+### 随用例携带的标准目标
+
+Catalog 和步骤共用 targets[]，每项为 `id/label/configurationTitle/category/fields`，可选 homeScope、families。允许同类新平台，也允许已有平台补字段描述；fields 可为空以单独探查平台。打开页面只核对卡片→标题→配置实例，不预先读取全部声明字段。
+
+| 内容     | 正式字段及限制                                                                                                                                                                                                    |
+| -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 身份     | id 是用例绑定身份，不自动证明产品内部 ID。v2 声明目标的打开结果注明 identityEvidence.basis=declared-card-and-title/productPlatformIdVerified=false。新平台和描述扩展的字段尚无任务参数合同，仅支持配置检查        |
+| 字段     | fields 的 key 是测试字段身份；值为 {kind,control,locator?,scope?}。kind=string/number/boolean，control=text/number/boolean/enum；枚举保持实际机器类型，不从标签猜布尔或数字                                       |
+| 定位     | 缺省精确 data-option-key；或 locator={kind:option-key,key}、{kind:label,name}、{kind:role,role,name}。role 只允许 textbox/spinbutton/checkbox/combobox；不接受 CSS/XPath/JS。多匹配、复合或新控件不能取第一个兜底 |
+| 字段范围 | scope={readyKeys:string[],section?:string}；section 必须唯一、展开且 aria-controls 可识别。不存在断言要求范围哨兵、标准表单就绪、无加载或未展开区块；不能只等时间或等待待查字段出现                               |
+| 主页范围 | homeScope={readyLabels:string[]}；未声明或哨兵未就绪时零匹配是 undetermined。缺失结论仅限当前分类的声明 UI 范围，不代表全部筛选页或安装注册表                                                                     |
+| 联动     | families=[{parent,enabled,children}]，复用已有平级父子记录/恢复。必须同平台且字段有能力；不能覆盖内置联动，不支持嵌套、循环或重复归属。准备用有序 set/ready，不引入表达式                                         |
+| 候选     | 标准 select 和受支持 aria-controls 下拉读取实际候选；按机器值或精确标签唯一匹配、回读和恢复。静态候选仅作提示；若 Catalog 自己用 fieldTypes.choices 限定预期，QA 也须同步编辑该数据                               |
+| 安全范围 | 读写前核对目标、实际类型、可编辑性，输入前再核对目标和候选。未知秘密字段不开放；既有签名、AGC、游戏选择继续用已有材料和专用适配。描述不能覆盖既有类型/敏感性或自授新行为                                          |
+
+### 探查、候选及结果
+
+下列为正式 v2 操作，参数及引用类型由 --describe 提供：
+
+| 操作                   | 输入与输出                                                                                             |
+| ---------------------- | ------------------------------------------------------------------------------------------------------ |
+| platform.probe         | 使用当前 case 的目标描述，须在配置页外；返回目标观察，不打开配置页                                     |
+| config.probe           | page/field → 目标观察；不等待待查目标出现                                                              |
+| config.candidates      | page/field → 候选观察；关闭自己打开的弹层，不选择候选                                                  |
+| config.select          | page/field/candidate → {changed,selected:{value,label}}；匹配唯一、有实际机器值且可选，随后回读        |
+| assert/check:probe     | observation/expected；检查 presence(present/absent)、visible、readable、writable、control              |
+| assert/check:candidate | observation/candidate/expected；expected={present:boolean,disabled?:boolean}，禁用检查仅用于存在的候选 |
+
+candidate 为 `{by:"value",value:string|number|boolean}` 或 `{by:"label",label:string}`。字符串 "false" 与布尔 false 不相等。无稳定机器值不能实际选择；虚拟列表未完整、缺适配或定位歧义不能用于不存在通过，不选默认值代替。
+
+目标观察包含 `scopeReady/scopeComplete/matchCount/presence/visible/readable/writable/control?/reason?`。presence=present/absent/undetermined；不可观测的 matchCount/visible 为 null。reason=not-ready/ambiguous/unsupported/incomplete-scope。找到但控件不支持仍可确认存在，读写检查受阻。候选观察为 `{target,complete,items:[{value?,label,disabled}]}`，不暴露内部定位器。
+
+断言须引用同例当前上下文中的未过期观察，并在断言前复核。可靠观察不符为 failed；未就绪、不完整、歧义或不支持为 blocked；身份/页面/快照失效停止。用例新增联动要求记录时父子原值均可读，不能先修改再把未知原值当作已保护；初态隐藏而无法可靠记录时，在写入前受阻。错误及恢复沿用 `steps[].output/error/diagnostic/evidence`、restoration、stopFollowingCases，进度与 HTML 协议不变。
+
+### 离线证据与前端接入边界
+
+定向验证调用真实原生加载/序列化、Catalog 编译、CLI 预览/哈希核验、配置操作、编排和恢复。[标准目标样本](../tools/build-ui/fixtures/configuration-steps/standard-target-v2.json) 以受控 DOM/输入夹具验证：同一执行器仅改 JSON 携带新平台、新字段、新候选，按标签选择、回读、缺失断言、失败后恢复并继续、恢复失败停止；另验类型保持、加载/隐藏/歧义/不支持区分和候选弹层清理。外部 DOM、输入和身份由夹具提供；既有入口只做受影响的定向回归。
+
+这些不是新目标在真实 PinK 中已验收的证据。没有修改产品制造目标，Basic 示例旧离线可读也不升级成实机通过。前端可据此接入原生导入、编辑、模板、预览及结果读取，真实 PinK 代表样本验收后续另行安排；本轮不改前端、不跑构建。
+
+## 面向 QA 的执行进度与产出（2026-10-26）
+
+第一版展示以本次实际选择的“平台＋组合／用例”为单位。执行侧负责计划展开、任务关联、状态和统计，前端负责启动及展示；不从普通日志猜业务状态，也不把历史通过合入本次完成数。此处的产出指测试计划、运行结果及证据文件，不包含构建产物验收。
+
+| 产出               | 归属与读取方式                                                                                                                  |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| 预览计划           | `--preview --output <新文件>`；记录程序、工程、用例、材料摘要、范围与哈希，运行时传同一文件 `--expected-plan`                   |
+| 本轮计划           | 运行目录 `plan.json`，保留本轮实际加载的计划                                                                                    |
+| 运行结果与最新进度 | `result.json` 原子替换；原结果格式保留，新增 `progress`，其 `kind=pink-build-progress/schemaVersion=1`                          |
+| 命令行进度通知     | 每条独立行以 `PINK_BUILD_PROGRESS ` 开头，后面是与已写检查点对应的 `progress` JSON；有意义的状态变化才输出，sequence 可以不连续 |
+| 人可读日志         | 普通 stdout/stderr 及 `[progress]` 摘要；前端可保存，但不用它们判定通过                                                         |
+| 最终 HTML          | 同目录 `report.html`，供直接打开；收到最终通知且执行进程退出后核对文件，不能仅凭进程退出码或提前出现的终态 JSON 判定报告已收尾  |
+| 失败现场           | 结果及进度的 `cases[].evidence` 引用脱敏 DOM JSON、可用截图；未能采集有 `unavailable`，不是每例保证有截图                       |
+
+`progress` 的稳定字段：`runId`、递增 `sequence`、`updatedAt`、`lifecycle(running/stopping/finished)`、`phase(preflight/connecting/executing/cleanup/finished)`、`outcome`、`summary`、`cases`、`issues(fatal/warnings)` 和 `artifacts(plan/result/report)`。产出路径为绝对路径；证据相对路径按本次结果目录解析。运行级故障或清理失败可与部分用例通过并存，不能仅看通过数量。
+
+- `summary` 提供 `total/completed/pending/running/passed/failed/blocked/stopped/skipped/notApplicable`。completed 表示已经有处置结果，包含受阻、跳过与不适用，不能显示为“成功数”；全部处理完也不等于全部通过。预检受阻可以在运行前已有处置。
+- `cases[]` 保留计划顺序，提供 `caseId/platform/platformLabel/title/group/groupLabel/batch/status/stage/startedAt/finishedAt/tasks/failure/evidence`。手写步骤没有公共组合时 group 可缺省，直接展示用例身份。status 为 `pending/running/passed/failed/blocked/stopped/skipped/not-applicable`；仅本例执行与必要收尾结束后才呈现终态。
+- stage 是当前粗粒度环节，活动例使用 `configuring/submitting/queued/building/checking/restoring/cleanup`；任务已成功仍可能正在核对。tasks 只含本例已唯一关联的 `taskId/state/progress/collected`；progress 仅在观察到有效 0～1 数值时提供，缺值不推算构建百分比。运行耗时可从时间戳计算。
+- 原始 `cases[].outcome` 是执行器结果字段，运行中应结合新增的 `cases[].lifecycle`，前端统一读取 `progress.cases[].status`，避免把尚在执行的候选结果当成通过。
+- `failure` 包含 `code/reason/details`；details 复用已脱敏的步骤原因链，证据仍按步骤引用。它不携带原配置、密码或任务参数对象。
+- stdout 按换行缓冲解析，不依赖一次 data 回调对应一条消息；只接受已支持的 kind/schemaVersion，并按 runId/sequence 拒绝混轮与倒序。普通日志独立显示。文件轮询可作为同一结果的读取方式，暂时读取失败时保留上一份有效状态。
+
+前端从独立 Node.js 24+ 进程启动 `tools/build-ui/dist/configuration-steps-cli.js`，传参使用数组，支持 `--catalog/--cases/--groups/--materials/--pink/--project/--results/--preview/--output/--run/--expected-plan`；直接步骤使用 `--file`。不要调用旧 Profile/Suite 入口。可使用 Node IPC 通道向监管进程发送 `{type:"pink-steps-stop"}` 请求安全停止；收到请求后展示 stopping 并等待已关联任务收集与报告收尾，不直接 kill 执行进程。无运行目录或无初始通知的加载/计划校验错误由进程非零退出及 stderr 呈现为启动失败，不伪造业务用例通过。
+
+详细 TypeScript 输出合同为 [run-progress.ts](../tools/build-ui/src/run-progress.ts)。执行侧已完成下列验证；前端真实启动、进度与结果展示仍由「PinK 测试工具前端设计」接入，接口完成不等于前端联调验收完成。
+
+### 本批验证与当前基础范围
+
+本批沿用 1949 包、`D:\PinK-test\l10n_test_new` 和原 custom 引擎。普通构建保留测试配置，只到构建成功；不改 SDK/引擎设置、不验产物。每组最多两项。
+
+| 证据                                                                                                                           | 平台与组合                                                   | 实际结论                                                                   |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------ | -------------------------------------------------------------------------- |
+| [跨分类结果](../results/2026-10-26-backend-delivery-1793005004391/cross-category/2026-10-26T09-00-52.219Z-steps/report.html)   | Web 桌面发布＋荣耀调试                                       | 两项通过，命令行和 JSON 体现运行中、核对中、逐项完成；本组未观察到实际排队 |
+| [短队列复核](../results/2026-10-26-backend-delivery-1793005004391/queue-regression/2026-10-26T09-08-29.399Z-steps/report.html) | OPPO、vivo 调试，另有一条 Web 桌面只读步骤保持双分类观察条件 | 两项构建通过，实际观察到 vivo 排队后开始；只读项通过。未重复 Web 桌面构建  |
+| [剩余基础项](../results/2026-10-26-backend-delivery-1793005004391/remaining/2026-10-26T09-11-49.052Z-steps/report.html)        | 华为快游戏、淘宝、Facebook、Google Play 调试                 | 四项通过；淘宝当前轮次已构建成功，旧轮次失败不改写                         |
+| [前提受阻输出](../results/2026-10-26-backend-delivery-1793005004391/blocked/2026-10-26T09-29-57.832Z-steps/report.html)        | Web 桌面混合，未提供适用清单                                 | 预检受阻，零连接、零提交，生成同一进度协议和报告；不是产品失败样本         |
+
+三轮真实执行的通知序号严格递增，最后一条通知与最终 `result.json.progress` 一致；均无警告，任务已收齐、观察器清理通过、引擎设置未变。相邻 `*.stdout.log` 可供前端回放，其中普通日志与机器通知混合。手写步骤首轮曾在连接前因初始结果尚无 `steps` 字段而失败；已修复初始投影并补回归，随后才运行上述短队列，原 stderr 保留。
+
+未受影响的基础证据继续复用：鸿蒙 NEXT、AGC、Android、Windows、抖音、支付宝的调试例来自[此前全平台轮次](../results/2026-10-26-all-platform-basics-1792997353791/execution/2026-10-26T06-53-38.087Z-steps/report.html)；Web 手机、微信来自[既有 v2 跨分类样本](../results/2026-10-24-v2-cross-platform-1792824582684/2026-10-24T07-11-45.981Z-steps/report.html)。后两项是原步骤样本身份，不伪装成完整公共组合通过。加上本批八个平台，共 16 平台有基础成功证据，不能外推为 18 平台四组全覆盖。
+
+OHOS 按用户决定本批保留，其原任务的 `SDK directory not exists` 失败不改写。OpenPaaS 用户已确认当前未登录；只读响应也记录 `User did not consent to login.`，没有提交构建或代为登录。两者列为当前试用前提限制，不继续消耗本轮构建验证。
+
+批量观察修复限定在工具：当前随包 Bridge 的 `webview:N` 请求序号用于过滤晚到旧响应，所选平台的任务状态取自其所属分类，不再把另一分类的旧 waiting 覆盖 processing。实际重新排队、任务消失和归属不明仍停止。离线回归覆盖错序与真实重排，短队列实机复核通过；旧失败轮次未保留完整消息时序，不反推每一条旧响应的具体顺序。
+
+新增进度统计、手写初始结果、实际等待中的数值更新、失败后继续、受阻和停止聚合使用真实加载/编排/投影实现做定向离线验证，外部 UI/任务由夹具提供；这些错误分支没有为本轮重复提交异常构建。旧结果及报告 schema 不改写，v2 仅增加生命周期和进度字段。
+
+## 按用例声明恢复（2026-10-26）
+
+普通发布、调试、混合构建保留测试配置，转换器不再附加原值记录和恢复。第四组条件/反向专项保留恢复；持久化及阶段串联专项继续按显式步骤保护初态。此规则替代下文早期迁移中“默认恢复所有组合”的约定，历史结果不改写。
+
+v2 沿用已有操作：没有 `record/restore` 时，`set`、联动准备、场景、图标及已有游戏选择可直接使用当前平台页执行；结果为 `restoration: not-required`。声明 `record` 时，修改前须记录目标及联动范围，场景修改须同时记录 `startScene/scenes`，且 `finally` 必须有对应 `restore`。`stage.record/stage.restore` 的合同不变。OpenPaaS 普通用例只要求目标为可选择的已有游戏；要求恢复的用例还须确认原游戏能安全选回。
+
+普通构建成功后不为清理重开配置页；提交前失败且上下文可信时只关闭当前页，保留已设置值。任务收集、最多两项调度、失败后继续/停止、身份与任务范围检查、观察器清理和报告仍执行。恢复仅适用于明确声明的用例，不把跳过恢复当作恢复成功；修改步骤后须重新预览并核验计划。
+
+2026-10-26 定向实机结果：[review.debug.web-desktop](../results/2026-10-26-keep-config-acceptance-1793000489942/execution/2026-10-26T07-42-44.794Z-steps/report.html) 通过。使用 `PinK-win32-x64-2610231949-0.0.2.0`、`D:\PinK-test\l10n_test_new`、原 custom 引擎，执行新的目录转换与计划核验；名称、输出名、物理覆盖、压缩、Source Map 等确有 UI 修改。任务 `task-1793000606513-9` 成功，入队和终态参数、成功卡片匹配。仅普通 `config.open` 执行一次，收尾打开/关闭均跳过，`restoration=not-required`；偏好保留 `qa_web_desktop_debug`、Debug 开启及外置 Source Map。最终队列为空、无残留探针、资源清理通过、无警告，引擎设置未变。未验证产物或重跑其他平台；提交前失败与恢复专项继续复用本次定向离线及既有实机证据，不把此单任务通过外推为双任务关联问题已解决或全平台验收完成。
+
 ## Windows 中断与安全收尾（2026-10-26）
 
 `-CatalogFile` 和 `-StepsFile` 的实际执行共用启动监管进程与独立执行进程。Windows 下执行进程使用独立控制台组；Ctrl+C、停止消息或启动监管进程退出，都转为执行进程的停止请求。离线预览和计划核验不启动执行进程，也不连接 PinK。旧 `Profile/Suite` 入口未在本批迁移。
@@ -47,7 +333,7 @@
 
 `-CatalogFile` 读取原四组 JSON，经共同转换器生成 v2 步骤，再进入现有计划核验、启动、两项调度和报告。`-StepsFile` 直接读取有序步骤；两者共用执行器。旧 `-CasesFile/-Plan four-groups` 入口兼容保留，不把旧入口的执行证据算作新入口验收。前端无需更换用例数据格式，本批没有修改前端。
 
-发布、调试、混合的基础项及变体已接入转换。自动场景、材料引用、字段顺序、保留值、隐藏子项、平台专用操作和任务参数核对复用现有实现；转换后的用例默认在 `finally` 恢复记录范围。可转换不代表可以直接执行：工程、材料、混合适用清单仍分别核查。Android、OHOS、HarmonyOS NEXT、Windows 发布加密改为 `{"$material":"nativeEncryption.key"}`；密钥填在私有材料清单，Zip 变体继承同一引用。
+发布、调试、混合的基础项及变体已接入转换。自动场景、材料引用、字段顺序、保留值、隐藏子项、平台专用操作和任务参数核对复用现有实现；当时默认恢复记录范围，现按上方 2026-10-26 规则由用例声明。可转换不代表可以直接执行：工程、材料、混合适用清单仍分别核查。Android、OHOS、HarmonyOS NEXT、Windows 发布加密改为 `{"$material":"nativeEncryption.key"}`；密钥填在私有材料清单，Zip 变体继承同一引用。
 
 第四组已接入现有图标、签名/PEM、AGC JSON、已有游戏切换、Windows 生成器、场景、淘宝适配及可执行 FORM 反向样本。FORM 编译为普通步骤，保留准备、提示、联动、按钮状态和恢复断言，没有增加整例执行的隐藏操作。选择 FORM 时沿用 `-Cases FORM-C06.s02` 等样本 ID；它们不会在未选择时混入默认基础组合。外部四组文件需携带完整 `formValidation`，不混用本机另一个版本的样本。
 
@@ -420,7 +706,7 @@ node .\tools\case-catalog\generate.mjs --cases-file '<导出的用例.json>' --o
 
 启动后仍由执行侧确认实际程序、工程、构建 Webview、配置页及字段前提。`findWindow` 按工作台 preload 提供的单文件夹 file URI 和程序 execPath 选择唯一窗口，不依赖标题；经 realpath 规范化后比较，Windows 忽略大小写，其他系统不强行忽略大小写。未打开工程、非 file URI、多根工作区、工程/程序不符和匹配歧义均拒绝；配置和提交前再次核对，身份变化停止后续提交。结果记录 `runtimeIdentity` 和 `planVerification`。已完成下文冷启动、接入及三种异常检查；未开工程、多根工作区等其他分支仍只有离线规则证据，不能据此声称所有启动现场均已实测。
 
-前端按结果 `kind/schemaVersion` 读取原生事实：旧结果包含 `task/checks`，步骤 v2 使用 `cases[].tasks/steps/restoration`，不能只根据日志、进程退出码或“已提交任务”推断通过。stdout/stderr 仍为日志，尚无稳定实时事件协议。v2 检查点已采用串行临时文件原子替换，Windows 短暂读占用按限时规则处理；消费者保留上一份有效状态并等待最终 JSON/HTML，不因临时读取不可用生成产品失败。新入口的停止及安全收尾已有定向证据，仍不能将强杀实际执行进程视为正常停止；旧入口不继承这批保护。
+前端按结果 `kind/schemaVersion` 读取原生事实：旧结果包含 `task/checks`，步骤 v2 使用 `cases[].tasks/steps/restoration`，不能只根据日志、进程退出码或“已提交任务”推断通过。2026-10-26 新增的 `PINK_BUILD_PROGRESS` 通知与 `result.json.progress` 是前端运行进度合同；其余 stdout/stderr 仍为日志，旧结果不补造实时事件。v2 检查点已采用串行临时文件原子替换，Windows 短暂读占用按限时规则处理；消费者保留上一份有效状态并等待最终 JSON/HTML，不因临时读取不可用生成产品失败。新入口的停止及安全收尾已有定向证据，仍不能将强杀实际执行进程视为正常停止；旧入口不继承这批保护。
 
 离线预览退出码 `1` 可能伴随完整、有效且包含受阻项的计划，接入模块仍应读取并展示它；退出码 `2` 才表示格式或文件读取等错误。读取计划也要检查文档格式与来源，不能只依赖退出码。
 

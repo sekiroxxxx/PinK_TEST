@@ -8,18 +8,25 @@ export const buildStepScheduling = {
   submissionOrder: "sequential-configuration-and-submit",
   groupBarrier: "collect-and-cleanup-before-next-group",
   repeatedPlatform: "flush-before-next-case",
+  publicChecks: "group-barrier",
 } as const;
 
 export function buildStepGroups(cases: Pick<BuildStepCase, "caseId" | "platform">[]) {
   const groups: Array<{ number: number; caseIds: string[]; platforms: string[] }> = [];
   for (const c of cases) {
     let group = groups.at(-1);
-    if (!group || group.caseIds.length === 2 || group.platforms.includes(c.platform)) {
+    if (
+      !group ||
+      !c.platform ||
+      !group.platforms.length ||
+      group.caseIds.length === 2 ||
+      group.platforms.includes(c.platform)
+    ) {
       group = { number: groups.length + 1, caseIds: [], platforms: [] };
       groups.push(group);
     }
     group.caseIds.push(c.caseId);
-    group.platforms.push(c.platform);
+    if (c.platform) group.platforms.push(c.platform);
   }
   return groups;
 }

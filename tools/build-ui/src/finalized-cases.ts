@@ -68,6 +68,7 @@ export async function selectFinalizedCases(
     project?: string;
     catalog?: CatalogDocument;
     captureInputs?: boolean;
+    endpoint?: "ui";
   } = {},
 ): Promise<BuildCase[]> {
   const catalog = caseContract.normalize(
@@ -181,12 +182,12 @@ export async function selectFinalizedCases(
         reason: "跨页面 L10N 项目启用/恢复操作尚未适配；未以当前启用状态冒充转换覆盖",
       });
     const resolved = await resolveCaseInputs(values, materials, sceneContext, catalog.fieldTypes);
-    assertSupportedValues(resolved.values, id);
+    assertSupportedValues(resolved.values, id, catalog.targets);
     blockers.push(...resolved.blockers.map((reason) => ({ kind: "material" as const, reason })));
     const definition: FinalCase = {
       revision: catalog.revision,
       group: scenario ? "conditional" : combo.template,
-      endpoint: scenario?.executionEndpoint ?? "build",
+      endpoint: scenario?.executionEndpoint ?? source.endpoint ?? "build",
       values: resolved.values,
       ...(source.captureInputs ? { inputs: structuredClone(values) } : {}),
       retained: [...new Set(retained)],
@@ -329,6 +330,27 @@ export async function selectFinalizedCases(
             },
           });
         }
+  }
+  if (catalog.executionOrder) {
+    const defined = new Set(
+      catalog.platforms.flatMap((p) =>
+        p.combinations.flatMap((c) => [
+          c.id,
+          ...c.variants.map((_, i) => `${c.id}.variant-${i + 1}`),
+        ]),
+      ),
+    );
+    for (const scenario of catalog.conditionalScenarios)
+      for (const pid of scenario.representativePlatforms)
+        defined.add(
+          scenario.representativePlatforms.length === 1 ? scenario.id : `${scenario.id}.${pid}`,
+        );
+    if (
+      catalog.executionOrder.some((id) => !cases.some((c) => c.caseId === id) && !defined.has(id))
+    )
+      throw new Error("executionOrder 含当前展开范围之外的用例 ID");
+    const order = new Map(catalog.executionOrder.map((id, index) => [id, index]));
+    cases.sort((a, b) => (order.get(a.caseId) ?? Infinity) - (order.get(b.caseId) ?? Infinity));
   }
   if (ids !== undefined) {
     const requested = ids.split(",").map((id) => id.trim());

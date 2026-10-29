@@ -17,6 +17,12 @@ import { valueHash } from "./plan-integrity.js";
 import type { Task } from "./common.js";
 import { submitBuild, waitBuild } from "./build-operations.js";
 import { ExecutionStop } from "./execution-stop.js";
+import {
+  buildRunProgress,
+  createProgressOutput,
+  progressPrefix,
+  type RunProgress,
+} from "./run-progress.js";
 
 const path = (name: string) =>
   fileURLToPath(new URL(`../fixtures/configuration-steps/${name}.json`, import.meta.url));
@@ -211,6 +217,140 @@ test("v2 JSON changes lifecycle and configuration order; real shared operations 
   assert.equal(rb.cases[0].tasks?.[0].taskId, "task-1");
 });
 
+test("v2 without record/restore retains build settings without reopening after collection", async () => {
+  const doc = structuredClone(base);
+  doc.cases[0].steps = doc.cases[0].steps.filter((s) => s.op !== "record");
+  doc.cases[0].finally = doc.cases[0].finally.filter((s) => s.op !== "restore");
+  const f = fixture("restore-failure"),
+    result = await runConfigurationSteps(loaded(doc), f.env);
+  assert.equal(result.outcome, "passed");
+  assert.equal(result.cases[0].restoration, "not-required");
+  assert.equal(result.cases[0].tasks?.[0].collected, true);
+  assert.equal(result.cases[0].tasks?.[0].state, "success");
+  assert.equal(f.values.name, "qa_v2_basic");
+  assert.equal(f.values["packages.web-mobile.orientation"], "landscape");
+  assert.deepEqual(
+    f.events.filter((e) => e === "open" || e === "close"),
+    ["open"],
+  );
+});
+
+test("progress observes running tasks and percentages before the case settles, then publishes final counts", async () => {
+  const doc = structuredClone(base);
+  const input = loaded(doc);
+  const initial = buildRunProgress(
+    input,
+    {
+      runId: "offline-run",
+      lifecycle: "running",
+      phase: "preflight",
+      outcome: "incomplete",
+      cases: doc.cases.map((c) => ({ caseId: c.caseId, platform: c.platform, outcome: "not-run" })),
+    },
+    1,
+  );
+  assert.equal(initial.summary.pending, 1);
+  assert.equal(initial.summary.completed, 0);
+  const f = fixture();
+  const snapshots: RunProgress[] = [],
+    lines: string[] = [];
+  const output = createProgressOutput((line) => lines.push(line));
+  const click = f.env.build.click;
+  f.env.build.click = async (operations, verify) => {
+    const at = await click(operations, verify);
+    f.tasks[0].state = "processing";
+    f.tasks[0].progress = 0.2;
+    return at;
+  };
+  const result = await runConfigurationSteps(input, {
+    ...f.env,
+    onProgress: async (p) => {
+      const progress = buildRunProgress(
+        input,
+        {
+          ...p,
+          runId: "offline-run",
+          lifecycle: "running",
+          phase: "executing",
+          outcome: "incomplete",
+        },
+        snapshots.length + 1,
+      );
+      snapshots.push(progress);
+      output(progress);
+      if (progress.cases[0].tasks[0]?.progress === 0.2) f.tasks[0].progress = 0.6;
+      else if (progress.cases[0].tasks[0]?.progress === 0.6) {
+        f.tasks[0].progress = 1;
+        f.tasks[0].state = "success";
+      }
+    },
+  });
+  assert.equal(result.outcome, "passed");
+  const building = snapshots.filter((p) => p.cases[0].stage === "building");
+  assert.ok(building.some((p) => p.cases[0].tasks[0]?.progress === 0.6));
+  assert.ok(
+    building.every(
+      (p) => p.summary.running === 1 && p.summary.passed === 0 && p.summary.completed === 0,
+    ),
+  );
+  assert.ok(snapshots.some((p) => p.cases[0].stage === "checking" && p.summary.passed === 0));
+  const last = snapshots.at(-1)!;
+  assert.equal(last.summary.passed, 1);
+  assert.equal(last.summary.completed, 1);
+  assert.ok(last.cases[0].finishedAt);
+  const lineCount = lines.length;
+  output({ ...last, sequence: last.sequence + 1, updatedAt: "later" });
+  assert.equal(lines.length, lineCount);
+  assert.ok(lines.some((line) => line.startsWith(progressPrefix)));
+  assert.ok(lines.some((line) => line.includes("构建中 60%")));
+  assert.ok(!JSON.stringify(snapshots).includes("qa_v2_basic")); // Values stay in the case, not progress notifications.
+});
+
+test("non-restoring v2 cases still close pre-submit failures and obey continue/stop rules", async () => {
+  for (const policy of ["continue", "stop"] as const) {
+    const doc = structuredClone(base),
+      first = doc.cases[0];
+    first.steps = first.steps.filter((s) => s.op !== "record");
+    first.finally = first.finally.filter((s) => s.op !== "restore");
+    doc.cases.push({ ...structuredClone(first), caseId: "next" });
+    first.onFailure = policy;
+    const check = first.steps.find((s) => s.op === "assert" && s.check === "values")!;
+    if (check.op === "assert" && check.check === "values") check.values.name = "mismatch";
+    const f = fixture("restore-failure"),
+      result = await runConfigurationSteps(loaded(doc), f.env);
+    assert.equal(result.cases[0].restoration, "not-required");
+    assert.equal(result.cases[0].outcome, policy === "continue" ? "failed" : "stopped");
+    assert.equal(result.cases[1].outcome, policy === "continue" ? "passed" : "skipped");
+    assert.equal(f.clicks(), policy === "continue" ? 1 : 0);
+    assert.equal(f.events.filter((e) => e === "close").length, 1);
+    assert.equal(f.values.name, "qa_v2_basic");
+  }
+});
+
+test("non-restoring v2 cases still stop on ambiguous submission without retry", async () => {
+  const doc = structuredClone(base),
+    first = doc.cases[0];
+  first.steps = first.steps.filter((s) => s.op !== "record");
+  first.finally = first.finally.filter((s) => s.op !== "restore");
+  doc.cases.push({ ...structuredClone(first), caseId: "must-not-run" });
+  const f = fixture("ambiguous"),
+    result = await runConfigurationSteps(loaded(doc), f.env);
+  assert.equal(result.cases[0].outcome, "stopped");
+  assert.equal(result.cases[0].restoration, "not-required");
+  assert.equal(result.cases[1].outcome, "skipped");
+  assert.equal(f.clicks(), 1);
+  assert.ok("taskMayStillBeRunning" in result && result.taskMayStillBeRunning);
+  const progress = buildRunProgress(
+    loaded(doc),
+    { ...result, runId: "offline", lifecycle: "finished", phase: "finished" },
+    1,
+  );
+  assert.equal(progress.summary.completed, 2);
+  assert.equal(progress.summary.passed, 0);
+  assert.equal(progress.summary.stopped, 1);
+  assert.equal(progress.summary.skipped, 1);
+});
+
 test("v2 rejects stale pages/snapshots, missing collection, foreign references and cleanup builds offline", () => {
   const bad: Array<(d: BuildStepsDocument) => void> = [
     (d) => {
@@ -230,6 +370,17 @@ test("v2 rejects stale pages/snapshots, missing collection, foreign references a
     },
     (d) => {
       d.cases[0].finally = [];
+    },
+    (d) => {
+      d.cases[0].finally = d.cases[0].finally.filter((s) => s.op !== "restore");
+    },
+    (d) => {
+      const record = d.cases[0].steps.find((s) => s.op === "record")!;
+      if (record.op === "record") record.fields = ["name"];
+    },
+    (d) => {
+      const record = d.cases[0].steps.splice(1, 1)[0];
+      d.cases[0].steps.splice(3, 0, record);
     },
     (d) => {
       d.cases[0].steps.push({ id: "again", op: "build.wait", task: "other-case" });
@@ -266,6 +417,14 @@ test("queued mismatch and explicit build failure retain task, collect, restore a
     assert.equal(result.cases[1].outcome, "passed");
     assert.equal(f.clicks(), 2);
     assert.deepEqual(f.values, f.initial);
+    const progress = buildRunProgress(
+      loaded(doc),
+      { ...result, runId: "offline", lifecycle: "finished", phase: "finished" },
+      1,
+    );
+    assert.equal(progress.summary.failed, 1);
+    assert.equal(progress.summary.passed, 1);
+    assert.ok(progress.cases[0].failure?.details.length);
   }
 });
 

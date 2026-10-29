@@ -1,3 +1,4 @@
+import type { ConfigurationTarget } from "./configuration-targets.js";
 export type InputValue = string | number | boolean | InputValue[] | { [key: string]: InputValue };
 export type InputValues = Record<string, InputValue>;
 export type GroupId = "publish" | "debug" | "mixed" | "conditional";
@@ -73,6 +74,8 @@ export interface CatalogScenario {
 export interface CatalogDocument {
   schemaVersion: 1;
   revision: string;
+  targets?: ConfigurationTarget[];
+  executionOrder?: string[];
   formValidation?: FormValidationDocument;
   fieldTypes: Record<string, FieldType>;
   templates: Array<{ id: GroupId; title: string; values: InputValues; [key: string]: unknown }>;

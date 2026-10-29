@@ -27,6 +27,13 @@ import { contentHash } from "./plan-integrity.js";
 import { assertExistingGameSelectable } from "./openpaas.js";
 import { requireInitial, cancelFile, clearScenes } from "./configuration-input-actions.js";
 import { assertBuildOnly, type StageRecord, type StageSnapshot } from "./configuration-stages.js";
+import { assertBuilderHome, type BuilderHomeObservation } from "./builder-checks.js";
+import {
+  assertTargetObservation,
+  assertCandidateObservation,
+  type TargetObservation,
+  type CandidateObservation,
+} from "./standard-fields.js";
 import {
   retainedValues,
   assertHiddenValue,
@@ -92,7 +99,11 @@ export async function runBuildSteps(
   env: ConfigurationStepsEnvironment,
   inputs?: StepInputs,
 ) {
-  if (!env.closeConfiguration) throw new Error("v2 缺少配置页关闭适配");
+  if (
+    document.cases.some((c) => c.steps.some((s) => s.op === "config.open")) &&
+    !env.closeConfiguration
+  )
+    throw new Error("v2 缺少配置页关闭适配");
   const hasBuild = document.cases.some((c) => c.steps.some((s) => s.op === "build.submit"));
   if (hasBuild && !env.build) throw new Error("v2 构建步骤缺少任务观察及 UI 提交适配");
   const cases: ConfigurationStepCaseResult[] = [];
@@ -152,6 +163,8 @@ export async function runBuildSteps(
       const result: ConfigurationStepCaseResult = {
         caseId: c.caseId,
         platform: c.platform,
+        ...(c.target ? { target: c.target } : {}),
+        lifecycle: "pending",
         outcome: "skipped",
         steps: [...c.steps, ...c.finally].map((s, i) => ({
           stepId: s.id,
@@ -168,36 +181,59 @@ export async function runBuildSteps(
       return [c.caseId, result] as const;
     }),
   );
-  const progress = () =>
-    env.onProgress?.({
+  const progress = () => {
+    for (const result of cases)
+      for (const task of result.tasks ?? []) {
+        const submission = task.taskId ? ownedSubmissions.get(task.taskId) : undefined;
+        if (submission?.task) {
+          task.state = submission.task.state;
+          task.progress = submission.task.progress;
+          task.collected = !!submission.terminal;
+        }
+      }
+    return env.onProgress?.({
       cases,
       buildAttempted: attempted,
       buildSubmitted: submitted,
       taskMayStillBeRunning:
         cases.some((c) => c.tasks?.some((s) => s.attempted && !s.collected)) || uncertain,
     });
+  };
+  const finishCase = async (result: ConfigurationStepCaseResult) => {
+    result.lifecycle = "finished";
+    result.finishedAt = new Date().toISOString();
+    await progress();
+  };
   for (const group of groups) {
     if (stopped) break;
     group.startedAt = Date.now();
-    const pending: Array<AsyncGenerator<void, void>> = [];
+    const pending: Array<{
+      execution: AsyncGenerator<void, void>;
+      result: ConfigurationStepCaseResult;
+    }> = [];
     for (const id of group.caseIds) {
       if (stopped) break;
       const c = document.cases.find((c) => c.caseId === id)!;
       const result = results.get(id)!;
       result.outcome = "passed";
+      result.lifecycle = "running";
+      result.startedAt = new Date().toISOString();
+      await progress();
       const execution = runCase(c, result);
       const state = await execution.next();
-      if (!state.done) pending.push(execution);
+      if (!state.done) pending.push({ execution, result });
+      else await finishCase(result);
       stopped ||= result.stopFollowingCases;
     }
     group.submissionsClosedAt = Date.now();
     // Only configuration/submission is interleaved. All waits, assertions and recovery finish
     // before the next group; a stop never abandons another already-owned task.
-    for (const execution of pending) {
+    for (const { execution, result } of pending) {
       for (;;) {
         const state = await execution.next();
         if (state.done) break;
       }
+      await finishCase(result);
     }
     const members = group.caseIds.map((id) => results.get(id)!);
     group.taskIds = members.flatMap(
@@ -262,10 +298,26 @@ export async function runBuildSteps(
       return;
     }
     const cleanupEntries = result.steps.slice(c.steps.length);
+    let builderPage: string | undefined;
+    const builderSnapshots = new Map<string, BuilderHomeObservation>();
+    const requirePlatform = () => {
+      if (!c.platform)
+        throw new ConfigurationOperationError("context", "公共检查不能借用平台配置操作", "stop");
+      return c.platform;
+    };
     let active: { id: string; operations: ConfigurationOperations } | undefined;
     let original: ConfigurationRecord | undefined;
     let stageOriginal: StageRecord | undefined;
     const stageSnapshots = new Map<string, StageSnapshot>();
+    const observations = new Map<
+      string,
+      {
+        value: TargetObservation | CandidateObservation;
+        refresh: () => Promise<TargetObservation | CandidateObservation>;
+        context?: ConfigurationOperations["context"];
+        revision?: number;
+      }
+    >();
     let failed = false,
       unsafe = false;
     const snapshots = new Map<
@@ -287,6 +339,7 @@ export async function runBuildSteps(
         attempted: s.attempted,
         taskId: s.task?.id,
         state: s.task?.state,
+        progress: s.task?.progress,
         submittedAt: s.submittedAt,
         collected: !!s.terminal,
       }));
@@ -363,14 +416,22 @@ export async function runBuildSteps(
       if (!submission.task || submission.terminal) return submission.terminal;
       submission.collectionAttempted = true;
       const build = env.build!;
+      let lastObservation = "";
       const value = await waitBuild({
         ...build,
         verify: () => env.session.verify(),
         taskId: submission.task.id,
         submittedAt: submission.submittedAt!,
-        onObservation: (task) => {
+        onObservation: async (task) => {
           submission.task = task;
           if (!unsafeContext) checkTasks();
+          const state = JSON.stringify(
+            [...ownedSubmissions].map(([id, s]) => [id, s.task?.state, s.task?.progress]),
+          );
+          if (state !== lastObservation) {
+            lastObservation = state;
+            await publish();
+          }
         },
       });
       submission.terminal = value.task;
@@ -385,6 +446,64 @@ export async function runBuildSteps(
         await env.session.verify();
         checkTasks();
         switch (step.op) {
+          case "builder.open":
+            if (!c.target || !env.builderUi)
+              throw new ConfigurationOperationError(
+                "precondition",
+                "缺少公共构建页面适配",
+                "blocked",
+              );
+            await env.builderUi.open(c.target);
+            builderPage = step.id;
+            builderSnapshots.clear();
+            out.output = { target: c.target, opened: true };
+            break;
+          case "builder.read":
+            if (!c.target || !env.builderUi || builderPage !== step.page)
+              throw new ConfigurationOperationError("context", "公共页面引用无效", "stop");
+            out.output = await env.builderUi.read(c.target);
+            if ((out.output as BuilderHomeObservation).category !== c.target.category)
+              throw new ConfigurationOperationError("context", "公共观察不属于声明的分类", "stop");
+            builderSnapshots.set(step.id, out.output as BuilderHomeObservation);
+            break;
+          case "builder.home":
+            if (!c.target || !env.builderUi)
+              throw new ConfigurationOperationError("context", "缺少公共页面收尾适配", "stop");
+            await env.builderUi.home(c.target);
+            builderPage = undefined;
+            out.output = { target: c.target, home: true };
+            break;
+          case "platform.probe":
+            if (!env.probePlatform)
+              throw new ConfigurationOperationError("precondition", "缺少平台探查适配", "blocked");
+            out.output = await env.probePlatform(requirePlatform());
+            observations.set(step.id, {
+              value: out.output as TargetObservation,
+              refresh: () => env.probePlatform!(requirePlatform()),
+            });
+            break;
+          case "config.probe":
+          case "config.candidates": {
+            const operations = page(step.page);
+            const value =
+              step.op === "config.probe"
+                ? await operations.probe(step.field)
+                : await operations.candidates(step.field);
+            observations.set(step.id, {
+              value,
+              refresh: () =>
+                step.op === "config.probe"
+                  ? operations.probe(step.field)
+                  : operations.candidates(step.field),
+              context: operations.context,
+              revision: operations.context.revision,
+            });
+            out.output = value;
+            break;
+          }
+          case "config.select":
+            out.output = await page(step.page).selectCandidate(step.field, step.candidate);
+            break;
           case "config.open": {
             if (!cleanup) {
               await env.verifySource?.();
@@ -397,7 +516,7 @@ export async function runBuildSteps(
               active.id = step.id;
               out.output = { platform: c.platform, mode: "reused" };
             } else {
-              const operations = await env.openConfiguration(c.platform);
+              const operations = await env.openConfiguration(requirePlatform());
               if (operations.context.session !== env.session || operations.platform !== c.platform)
                 throw new ConfigurationOperationError(
                   "context",
@@ -409,6 +528,16 @@ export async function runBuildSteps(
               active = { id: step.id, operations };
               if (original) await operations.continueRecord(original);
               out.output = { platform: c.platform, mode: "opened" };
+              if (document.targets?.some((target) => target.id === c.platform))
+                out.output = {
+                  ...(out.output as object),
+                  identityEvidence: {
+                    bindingId: c.platform,
+                    configurationTitle: operations.context.title,
+                    basis: "declared-card-and-title",
+                    productPlatformIdVerified: false,
+                  },
+                };
             }
             break;
           }
@@ -604,11 +733,11 @@ export async function runBuildSteps(
             if (before.id !== id) {
               try {
                 assertExistingGameSelectable(before, id);
-                assertExistingGameSelectable(before, before.id);
+                if (original) assertExistingGameSelectable(before, before.id);
               } catch {
                 throw new ConfigurationOperationError(
                   "precondition",
-                  "目标与原游戏都须能安全选择；不修改无法恢复的游戏初态",
+                  "目标游戏须可选择；声明恢复时原游戏也须可选择",
                   "blocked",
                 );
               }
@@ -699,7 +828,7 @@ export async function runBuildSteps(
             const accepted = await submitBuild({
               source: env.build!.source,
               baselineIds: new Set([...env.build!.baselineIds, ...owned]),
-              platform: c.platform,
+              platform: requirePlatform(),
               outputName: submission.capture.configuration.outputName,
               verify,
               click: () => env.build!.click(operations, verify),
@@ -729,7 +858,7 @@ export async function runBuildSteps(
             };
             operations.context.invalidate();
             active = undefined;
-            assertParameters(accepted.task, c.platform, submission.capture);
+            assertParameters(accepted.task, requirePlatform(), submission.capture);
             break;
           }
           case "build.wait": {
@@ -739,7 +868,28 @@ export async function runBuildSteps(
             break;
           }
           case "assert": {
-            if (step.check === "empty") {
+            if (step.check === "probe" || step.check === "candidate") {
+              const observed = observations.get(step.observation)!;
+              if (observed.context) {
+                await observed.context.verify();
+                if (observed.revision !== observed.context.revision)
+                  throw new ConfigurationOperationError("snapshot", "目标观察已过期", "stop");
+              }
+              if (!configurationEqual(observed.value, await observed.refresh()))
+                throw new ConfigurationOperationError(
+                  "snapshot",
+                  "目标或候选在观察后已变化，请重新探查",
+                  "stop",
+                );
+              out.output =
+                step.check === "probe"
+                  ? assertTargetObservation(observed.value as TargetObservation, step.expected)
+                  : assertCandidateObservation(
+                      observed.value as CandidateObservation,
+                      step.candidate,
+                      step.expected,
+                    );
+            } else if (step.check === "empty") {
               const operations = page(step.page);
               out.output = operations.check(
                 "empty",
@@ -844,7 +994,7 @@ export async function runBuildSteps(
               if (value.reference !== step.task || value.task.id !== submission.task?.id)
                 throw new ConfigurationOperationError("context", "终态结果不属于指定任务", "stop");
               assertBuildSucceeded(value.task);
-              assertParameters(value.task, c.platform, submission.capture);
+              assertParameters(value.task, requirePlatform(), submission.capture);
               await env.build!.assertCard(value.task);
               submission.checked = true;
               out.output = {
@@ -853,6 +1003,15 @@ export async function runBuildSteps(
                 parameters: "matched",
                 card: "passed",
               };
+            } else if (step.check === "builder-state") {
+              const snapshot = builderSnapshots.get(step.snapshot);
+              if (!c.target || !env.builderUi || !snapshot || !builderPage)
+                throw new ConfigurationOperationError("context", "公共断言缺少当前观察", "stop");
+              out.output = assertBuilderHome(
+                snapshot,
+                await env.builderUi.read(c.target),
+                step.expected,
+              );
             } else if (step.check === "values") {
               const expected: CaseValues = {};
               for (const [field, value] of Object.entries(step.values))
@@ -887,10 +1046,15 @@ export async function runBuildSteps(
         out.outcome = "passed";
       } catch (error) {
         // Opening may have left an unverified modal behind; never continue to another case.
-        if (step.op === "config.open" && !(error instanceof ConfigurationOperationError))
+        if (
+          ["config.open", "builder.open", "builder.home"].includes(step.op) &&
+          !(error instanceof ConfigurationOperationError)
+        )
           error = new ConfigurationOperationError(
             "context",
-            "配置页未能确认，停止后续输入",
+            step.op === "config.open"
+              ? "配置页未能确认，停止后续输入"
+              : "公共页面未能打开或收尾，停止后续输入",
             "stop",
             { cause: error },
           );
@@ -959,7 +1123,7 @@ export async function runBuildSteps(
         if (task) {
           out.output = { taskId: task.id, state: task.state };
           assertBuildSucceeded(task);
-          assertParameters(task, c.platform, submission.capture);
+          assertParameters(task, requirePlatform(), submission.capture);
         }
         out.outcome = "passed";
       } catch (error) {
@@ -978,7 +1142,7 @@ export async function runBuildSteps(
       failed = true;
       if ((original || stageOriginal) && result.restoration !== "failed")
         result.restoration = "unsafe";
-    } else if (original || stageOriginal || active) {
+    } else if (original || stageOriginal || active || builderPage) {
       for (const [i, step] of c.finally.entries()) {
         await execute(step, cleanupEntries[i], true);
         if (unsafe || result.restoration === "failed") break;
@@ -989,6 +1153,7 @@ export async function runBuildSteps(
       attempted: s.attempted,
       taskId: s.task?.id,
       state: s.task?.state,
+      progress: s.task?.progress,
       message: s.task?.message,
       submittedAt: s.submittedAt,
       collected: !!s.terminal,
