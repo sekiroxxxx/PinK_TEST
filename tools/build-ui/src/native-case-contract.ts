@@ -16,6 +16,7 @@ export {
   composeNativeCases,
   mapCompositionResults,
   describeCaseComposition,
+  validateCaseComposition,
 } from "./case-composition.js";
 export type {
   CaseComposition,
@@ -30,7 +31,10 @@ export type {
   CompositionParameter,
   CompositionUse,
   CompositionValue,
+  CompositionValidation,
 } from "./case-composition.js";
+export { listNativeCaseReferences } from "./native-case-references.js";
+export type { NativeCaseReference } from "./native-case-references.js";
 
 export function identifyNativeDocument(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value))
@@ -192,6 +196,10 @@ export function describeNativeCaseCapabilities() {
       required: ["id", "label", "configurationTitle", "category", "fields"],
       categories: ["X-Device", "X-Application"],
       scalarKinds: ["string", "number", "boolean"],
+      mixedEnum: {
+        kind: "scalar",
+        valueKinds: "explicit unique scalarKinds, at least two; enum only",
+      },
       controls: ["text", "number", "boolean", "enum"],
       locators: [
         { kind: "option-key", required: ["key"] },

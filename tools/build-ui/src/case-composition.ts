@@ -5,11 +5,13 @@ import { validateConfigurationSteps } from "./configuration-steps-contract.js";
 import { validateExecutableCatalog } from "./field-capabilities.js";
 import { stepOperations } from "./step-operation-capabilities.js";
 import type { BuildStep, BuildStepCase, BuildStepsDocument } from "./build-steps-contract.js";
-import type { CatalogDocument } from "./case-contract.js";
+import { caseContract } from "./case-contract.js";
 import type { ConfigurationTarget } from "./configuration-targets.js";
 import type { StepInputOptions } from "./step-inputs.js";
 import { caseCompositionSchema, compositionSelectionSchema } from "./case-composition-schema.js";
 import { compositionTemplates } from "./case-composition-templates.js";
+import { catalogReferenceEntries, listNativeCaseReferences } from "./native-case-references.js";
+import { compileCatalogDefinition } from "./catalog-definition-steps.js";
 
 export type CompositionValue = unknown;
 export interface CompositionParameter {
@@ -135,6 +137,19 @@ export interface CaseAssembly {
   willSubmit: boolean;
   sourceMap: CompositionOrigin[];
   diagnostics: CompositionDiagnostic[];
+}
+
+export interface CompositionValidation {
+  valid: boolean;
+  definitionSha256: string;
+  contextChecked: false;
+  diagnostics: CompositionDiagnostic[];
+  deferredChecks: Array<{
+    instancePath: string[];
+    kind: string;
+    reference?: string;
+    reason: string;
+  }>;
 }
 
 class CompositionError extends Error {
@@ -284,45 +299,167 @@ function argumentsFor(
   );
 }
 
-function catalogEntries(catalog: CatalogDocument) {
-  const entries: Array<{
-    id: string;
-    platform: string;
-    combo?: string;
-    variant?: number;
-    scenario?: number;
-  }> = [];
-  for (const group of ["publish", "debug", "mixed"])
-    for (const platform of catalog.platforms) {
-      const combo = platform.combinations.find((c) => c.template === group)!;
-      entries.push({ id: combo.id, platform: platform.id, combo: combo.id });
-      combo.variants.forEach((_, index) =>
-        entries.push({
-          id: `${combo.id}.variant-${index + 1}`,
-          platform: platform.id,
-          combo: combo.id,
-          variant: index,
-        }),
-      );
+/** Check unused fragment structure/symbols too; unbound lifetime checks remain explicitly deferred. */
+function inspectFragmentDefinitions(
+  fragments: Map<string, CompositionFragment>,
+  sources: Map<string, unknown>,
+) {
+  const hasParameter = (value: unknown): boolean =>
+    Array.isArray(value)
+      ? value.some(hasParameter)
+      : !!value &&
+        typeof value === "object" &&
+        (Object.hasOwn(value, "$param") || Object.values(value).some(hasParameter));
+  const visitValue = (
+    value: unknown,
+    parameters: Set<string>,
+    path: string[],
+    inputPath: Array<string | number>,
+  ) => {
+    if (Array.isArray(value))
+      return value.forEach((v, i) => visitValue(v, parameters, path, [...inputPath, i]));
+    if (!value || typeof value !== "object") return;
+    const raw = value as Record<string, unknown>;
+    if (Object.hasOwn(raw, "$param")) {
+      keys(raw, ["$param"], "参数引用");
+      if (typeof raw.$param !== "string" || !parameters.has(raw.$param))
+        throw new CompositionError("parameter-missing", "参数引用不存在", path, { inputPath });
+      return;
     }
-  catalog.conditionalScenarios.forEach((s, scenario) =>
-    s.representativePlatforms.forEach((platform) =>
-      entries.push({
-        id: s.representativePlatforms.length === 1 ? s.id : `${s.id}.${platform}`,
-        platform,
-        scenario,
-      }),
-    ),
-  );
-  for (const family of catalog.formValidation?.cases ?? [])
-    for (const sample of family.samples)
-      for (const platform of sample.platforms)
-        entries.push({ id: `${sample.id}.${platform}`, platform });
-  const order = catalog.executionOrder ?? [];
-  return [
-    ...order.flatMap((id) => entries.filter((c) => c.id === id)),
-    ...entries.filter((c) => !order.includes(c.id)),
-  ];
+    if (Object.hasOwn(raw, "$output")) {
+      keys(raw, ["$output"], "输出引用");
+      const parts =
+        typeof raw.$output === "string" ? [raw.$output] : list<string>(raw.$output, "$output");
+      if (!parts.length)
+        throw new CompositionError("dependency", "输出引用路径不能为空", path, { inputPath });
+      parts.forEach(identifier);
+      return;
+    }
+    if (Object.keys(raw).some((k) => k.startsWith("$") && !["$material", "$scene"].includes(k)))
+      throw new CompositionError("reference", "不支持的输入引用；不能使用表达式或脚本", path, {
+        inputPath,
+      });
+    for (const [key, child] of Object.entries(raw))
+      visitValue(child, parameters, path, [...inputPath, key]);
+  };
+  const scan = (
+    nodes: unknown,
+    kind: "nodes" | "actions",
+    parameters: Set<string>,
+    stack: string[],
+    parent: string[],
+  ) => {
+    const ids = new Set<string>();
+    for (const raw of list<Record<string, unknown>>(nodes, "片段内容")) {
+      const node = object(raw, "node"),
+        id = identifier(node.id),
+        path = [...parent, id];
+      if (ids.has(id)) throw new CompositionError("duplicate-node", "同级节点 id 重复", path);
+      ids.add(id);
+      if (node.kind === "use") {
+        keys(node, ["id", "kind", "fragmentId", "arguments"], "use");
+        const fragment = fragments.get(String(node.fragmentId));
+        if (!fragment || fragment.kind !== kind)
+          throw new CompositionError("fragment-missing", "引用片段不存在或类型不匹配", path);
+        if (stack.includes(fragment.id))
+          throw new CompositionError("reference-cycle", "片段存在循环引用", path);
+        const args = node.arguments === undefined ? {} : object(node.arguments, "arguments");
+        if (Object.keys(args).some((name) => !Object.hasOwn(fragment.parameters ?? {}, name)))
+          throw new CompositionError("parameter-unknown", "引用传入了未声明的参数", path);
+        for (const [name, spec] of Object.entries(fragment.parameters ?? {}))
+          if (!Object.hasOwn(args, name) && !Object.hasOwn(spec, "default"))
+            throw new CompositionError("parameter-missing", `缺少参数 ${name}`, path, {
+              inputPath: ["arguments", name],
+            });
+        for (const [name, value] of Object.entries(args))
+          if (!hasParameter(value))
+            argumentsFor(
+              {
+                id: fragment.id,
+                kind: "actions",
+                steps: [],
+                parameters: { [name]: fragment.parameters![name] },
+              },
+              { [name]: value },
+              {},
+              parent,
+              path,
+            );
+        visitValue(args, parameters, path, ["arguments"]);
+        inspect(fragment, [...stack, fragment.id]);
+      } else if (kind === "nodes" && node.kind === "group") {
+        keys(node, ["id", "kind", "nodes"], "group");
+        scan(node.nodes, kind, parameters, stack, path);
+      } else if (kind === "nodes" && node.kind === "flow") {
+        keys(node, ["id", "kind", "target", "onFailure", "before", "steps", "finally"], "flow");
+        const target = object(node.target, "flow.target");
+        if (!["platform", "builder"].includes(String(target.kind)))
+          throw new CompositionError("target", "操作链缺少受支持目标", path);
+        keys(
+          target,
+          target.kind === "platform" ? ["kind", "id"] : ["kind", "category"],
+          "flow.target",
+        );
+        visitValue(target, parameters, path, ["target"]);
+        scan(node.before ?? [], "actions", parameters, stack, path);
+        scan(node.steps, "actions", parameters, stack, path);
+        scan(node.finally, "actions", parameters, stack, path);
+      } else if (kind === "nodes" && node.kind === "case-ref") {
+        keys(
+          node,
+          [
+            "id",
+            "kind",
+            "sourceId",
+            "caseId",
+            "endpoint",
+            "values",
+            "expectedValues",
+            "stepInputs",
+          ],
+          "case-ref",
+        );
+        const source = sources.get(String(node.sourceId));
+        if (
+          !source ||
+          !listNativeCaseReferences(source).items.some((item) => item.caseId === node.caseId)
+        )
+          throw new CompositionError("case-missing", "原生来源或确切用例不存在", path);
+        visitValue([node.values, node.expectedValues, node.stepInputs], parameters, path, []);
+      } else if (kind === "actions" && node.kind === "action") {
+        keys(node, ["id", "kind", "moduleId", "operationId", "inputs"], "action");
+        if (
+          node.moduleId !== "pink-build" ||
+          !Object.hasOwn(stepOperations, String(node.operationId))
+        )
+          throw new CompositionError("unsupported-operation", "模块或操作未受支持", path);
+        visitValue(object(node.inputs, "inputs"), parameters, path, ["inputs"]);
+      } else throw new CompositionError("node-kind", "未支持的片段节点", path);
+    }
+  };
+  const inspect = (fragment: CompositionFragment, stack: string[]) => {
+    const names = new Set<string>();
+    for (const [name, spec] of Object.entries(fragment.parameters ?? {})) {
+      identifier(name);
+      keys(spec, ["kind", "default", "references"], "参数声明");
+      if (!["string", "number", "boolean", "array", "object", "output"].includes(spec.kind))
+        throw new CompositionError("parameter-type", "参数声明类型不支持", [fragment.id]);
+      names.add(name);
+      if (Object.hasOwn(spec, "default") && !hasParameter(spec.default))
+        argumentsFor(
+          { id: fragment.id, kind: "actions", steps: [], parameters: { [name]: spec } },
+          {},
+          {},
+          [],
+          [fragment.id],
+        );
+    }
+    if (fragment.kind === "nodes") scan(fragment.nodes, "nodes", names, stack, [fragment.id]);
+    else
+      for (const nodes of [fragment.before ?? [], fragment.steps, fragment.finally ?? []])
+        scan(nodes, "actions", names, stack, [fragment.id]);
+  };
+  for (const fragment of fragments.values()) inspect(fragment, [fragment.id]);
 }
 
 /** Pure authoring helper. No compilation, resource discovery, file access or PinK connection. */
@@ -336,10 +473,7 @@ export function createCaseComposition(
     raw.kind === "pink-configuration-steps"
       ? validateConfigurationSteps(raw)
       : validateExecutableCatalog(raw);
-  const ids =
-    "templates" in native
-      ? catalogEntries(native).map((c) => c.id)
-      : native.cases.map((c) => c.caseId);
+  const ids = listNativeCaseReferences(native).items.map((c) => c.caseId);
   return {
     kind: "pink-case-composition",
     schemaVersion: 1,
@@ -368,6 +502,33 @@ export async function composeNativeCases(
   definition: unknown,
   selection?: CompositionSelection,
   options: StepInputOptions = {},
+): Promise<CaseAssembly> {
+  return assembleCaseComposition(definition, selection, options);
+}
+
+/** Authoring validation shares expansion/dependency checks, never runtime source compilation. */
+export async function validateCaseComposition(
+  definition: unknown,
+  selection?: CompositionSelection,
+): Promise<CompositionValidation> {
+  const deferredChecks: CompositionValidation["deferredChecks"] = [];
+  const result = await assembleCaseComposition(definition, selection, {}, deferredChecks);
+  return {
+    valid: result.diagnostics.length === 0,
+    definitionSha256: result.definitionSha256,
+    contextChecked: false,
+    diagnostics: result.diagnostics,
+    deferredChecks: [
+      ...new Map(deferredChecks.map((check) => [JSON.stringify(check), check])).values(),
+    ],
+  };
+}
+
+async function assembleCaseComposition(
+  definition: unknown,
+  selection: CompositionSelection | undefined,
+  options: StepInputOptions,
+  authoring?: CompositionValidation["deferredChecks"],
 ): Promise<CaseAssembly> {
   const result: CaseAssembly = {
     kind: "pink-case-assembly",
@@ -409,6 +570,7 @@ export async function composeNativeCases(
       keys(source, ["id", "document"], "source");
       const id = identifier(source.id);
       if (sources.has(id)) throw new CompositionError("duplicate-source", "source id 重复");
+      if (authoring) listNativeCaseReferences(source.document);
       sources.set(id, source.document);
     }
     for (const fragment of list<CompositionFragment>(doc.fragments, "fragments")) {
@@ -424,6 +586,8 @@ export async function composeNativeCases(
         throw new CompositionError("fragment", "片段类型错误或 id 重复");
       fragments.set(id, fragment);
     }
+    if (authoring) inspectFragmentDefinitions(fragments, sources);
+    const usedFragments = new Set<string>();
     const units: Unit[] = [];
     const enter = (
       id: string,
@@ -436,6 +600,7 @@ export async function composeNativeCases(
         throw new CompositionError("fragment-missing", "引用片段不存在或类型不匹配", path);
       if (stack.includes(id))
         throw new CompositionError("reference-cycle", "片段存在循环引用", path);
+      usedFragments.add(id);
       return fragment;
     };
     const walk = (
@@ -496,7 +661,18 @@ export async function composeNativeCases(
             "selection.items",
           );
     if (selection) keys(selection, ["items"], "selection");
-    if (!items.length) throw new CompositionError("selection-empty", "本轮未选择任何用例");
+    if (!items.length) {
+      if (authoring && selection === undefined && units.length === 0) {
+        for (const fragment of fragments.values())
+          authoring.push({
+            instancePath: [fragment.id],
+            kind: "uninstantiated-fragment",
+            reason: "片段尚无实例，参数绑定后的生命周期与输出依赖待实例化校验",
+          });
+        return result;
+      }
+      throw new CompositionError("selection-empty", "本轮未选择任何用例");
+    }
     const selected: Array<{
       unit: Unit;
       item: CompositionSelection["items"][number];
@@ -658,7 +834,9 @@ export async function composeNativeCases(
           } else {
             const catalog = structuredClone(validateExecutableCatalog(source));
             addTargets(catalog.targets);
-            const entry = catalogEntries(catalog).find((c) => c.id === reference.caseId);
+            const entry = catalogReferenceEntries(catalog).find(
+              (c) => c.caseId === reference.caseId,
+            );
             if (!entry) throw new CompositionError("case-missing", "Catalog 用例不存在");
             if (Object.keys(values).length) {
               if (entry.combo) {
@@ -686,19 +864,44 @@ export async function composeNativeCases(
                   "反向样本请在原生定义中修改输入，不能改写样本语义",
                 );
             }
-            const compilation = await compileCatalogDocument(catalog, {
-              ...options,
-              cases: unit.node.caseId,
-              ...(unit.node.caseId.startsWith("FORM-") ? { groups: "conditional" } : {}),
-              endpoint: unit.node.endpoint,
-            });
-            const chosen = compilation.cases.find((c) => c.caseId === reference.caseId);
-            if (!chosen?.document)
-              throw new CompositionError(
-                "case-blocked",
-                chosen?.gaps.map((g) => g.reason).join("；") || "Catalog 用例没有完整执行定义",
+            if (authoring) {
+              const compiled = await compileCatalogDefinition(
+                catalog,
+                reference.caseId,
+                reference.endpoint,
               );
-            native = structuredClone(chosen.document.cases[0]);
+              authoring.push(
+                ...compiled.deferredChecks.map((check) => ({ ...check, instancePath: unit.path })),
+              );
+              if (!compiled.document) {
+                if (
+                  Object.keys(values).length ||
+                  Object.keys(expected).length ||
+                  Object.keys({ ...unit.node.stepInputs, ...item.stepInputs }).length
+                )
+                  throw new CompositionError(
+                    "override-unavailable",
+                    "未定义操作链的保留样本不能覆盖操作输入或预期",
+                    unit.path,
+                  );
+                continue;
+              }
+              native = structuredClone(compiled.document.cases[0]);
+            } else {
+              const compilation = await compileCatalogDocument(catalog, {
+                ...options,
+                cases: unit.node.caseId,
+                ...(unit.node.caseId.startsWith("FORM-") ? { groups: "conditional" } : {}),
+                endpoint: unit.node.endpoint,
+              });
+              const chosen = compilation.cases.find((c) => c.caseId === reference.caseId);
+              if (!chosen?.document)
+                throw new CompositionError(
+                  "case-blocked",
+                  chosen?.gaps.map((g) => g.reason).join("；") || "Catalog 用例没有完整执行定义",
+                );
+              native = structuredClone(chosen.document.cases[0]);
+            }
           }
           for (const [field, value] of Object.entries({ ...values, ...expected })) {
             const assertions = native.steps.filter(
@@ -921,6 +1124,22 @@ export async function composeNativeCases(
             op: action.operationId,
             ...inputs,
           } as BuildStep;
+          if (authoring) {
+            const visit = (value: unknown) => {
+              const ref = caseContract.reference(value);
+              if (ref)
+                authoring.push({
+                  instancePath: instance.path,
+                  kind: ref.kind,
+                  reference: ref.name,
+                  reason:
+                    ref.kind === "scene" ? "场景角色待本轮工程绑定" : "材料引用待本轮材料解析",
+                });
+              else if (Array.isArray(value)) value.forEach(visit);
+              else if (value && typeof value === "object") Object.values(value).forEach(visit);
+            };
+            visit(inputs);
+          }
           expanded.push(step);
           origin.steps.push({
             stepId: step.id,
@@ -947,10 +1166,23 @@ export async function composeNativeCases(
             origin.steps.filter((s) =>
               position[1] === "finally" ? s.phase === "finally" : s.phase !== "finally",
             )[Number(position[2])];
+          const fieldPath =
+            step &&
+            position &&
+            error instanceof Error &&
+            /^((?:\.[A-Za-z_][\w-]*|\[(?:\d+|"(?:[^"\\]|\\.)*")\])+)：/.exec(
+              error.message.slice(position.index + position[0].length),
+            );
+          const inputPath = fieldPath
+            ? [...fieldPath[1].matchAll(/\.([A-Za-z_][\w-]*)|\[(\d+|"(?:[^"\\]|\\.)*")\]/g)].map(
+                (segment): string | number => segment[1] ?? JSON.parse(segment[2]),
+              )
+            : undefined;
           throw new CompositionError(
             "native-contract",
             error instanceof Error ? error.message : "原生步骤校验失败",
             step ? step.instancePath : unit.path,
+            inputPath ? { inputPath } : {},
           );
         }
         cases.push(native);
@@ -959,7 +1191,7 @@ export async function composeNativeCases(
         diagnostic(error, unit.path, "native-validation");
       }
     }
-    if (!result.diagnostics.length) {
+    if (!result.diagnostics.length && (!authoring || cases.length)) {
       const document = validateConfigurationSteps({
         kind: "pink-configuration-steps",
         schemaVersion: 2,
@@ -977,6 +1209,14 @@ export async function composeNativeCases(
       result.caseIds = document.cases.map((c) => c.caseId);
       result.willSubmit = document.cases.some((c) => c.steps.some((s) => s.op === "build.submit"));
     }
+    if (authoring)
+      for (const fragment of fragments.values())
+        if (!usedFragments.has(fragment.id))
+          authoring.push({
+            instancePath: [fragment.id],
+            kind: "uninstantiated-fragment",
+            reason: "片段未进入本轮实例，参数绑定后的生命周期与输出依赖待实例化校验",
+          });
   } catch (error) {
     diagnostic(error, [], "definition");
   }
@@ -1053,7 +1293,20 @@ export function describeCaseComposition() {
     schema: caseCompositionSchema,
     selectionSchema: compositionSelectionSchema,
     format: { kind: "pink-case-composition", schemaVersion: 1 },
-    exports: ["createCaseComposition", "composeNativeCases", "mapCompositionResults"],
+    exports: [
+      "createCaseComposition",
+      "composeNativeCases",
+      "mapCompositionResults",
+      "validateCaseComposition",
+      "listNativeCaseReferences",
+    ],
+    authoring: {
+      validate: "validateCaseComposition(definition, selection?)",
+      references: "listNativeCaseReferences(document)",
+      contextChecked: false,
+      executableAssembly: false,
+      runtimePreview: "composeNativeCases(definition, selection, {project, materials})",
+    },
     nodeKinds: ["group", "case-ref", "flow", "use"],
     fragmentKinds: ["nodes", "actions"],
     moduleIds: ["pink-build"],

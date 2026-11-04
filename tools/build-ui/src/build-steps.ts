@@ -19,6 +19,7 @@ import { isTerminal, taskTimeout } from "./task-observer.js";
 import { buildStepGroups, buildStepScheduling } from "./build-step-scheduling.js";
 import type { Configuration, Task } from "./common.js";
 import type { CaseValues } from "./finalized-cases.js";
+import type { SceneCandidate } from "./case-inputs.js";
 import { stepNeedsInputs, type StepInputs } from "./step-inputs.js";
 import type { BuildStepsDocument, BuildStep, BuildStepCase } from "./build-steps-contract.js";
 import { sensitiveConfigurationField } from "./configuration-steps-contract.js";
@@ -53,6 +54,7 @@ export interface BuildCapture {
   values: CaseValues;
   preserved?: string[];
   stages?: string[][];
+  sceneCandidates?: SceneCandidate[];
 }
 export interface BuildSupplement {
   values: CaseValues;
@@ -91,7 +93,11 @@ function assertParameters(task: Task, platform: string, capture: BuildCapture) {
       "任务平台或输出名称与提交快照不一致",
       "failed",
     );
-  assertBuildTaskValues(task, { values: capture.values, preserved: capture.preserved ?? [] });
+  assertBuildTaskValues(task, {
+    values: capture.values,
+    preserved: capture.preserved ?? [],
+    sceneCandidates: capture.sceneCandidates,
+  });
 }
 
 export async function runBuildSteps(
@@ -320,6 +326,7 @@ export async function runBuildSteps(
     >();
     let failed = false,
       unsafe = false;
+    let capabilitiesChecked = false;
     const snapshots = new Map<
       string,
       {
@@ -538,6 +545,11 @@ export async function runBuildSteps(
                     productPlatformIdVerified: false,
                   },
                 };
+            }
+            if (!cleanup && !capabilitiesChecked && env.checkCapabilities) {
+              const capabilities = await env.checkCapabilities(active!.operations, c.steps);
+              out.output = { ...(out.output as object), capabilities };
+              capabilitiesChecked = true;
             }
             break;
           }
@@ -1025,7 +1037,11 @@ export async function runBuildSteps(
                   "readback",
                   field,
                   !!snapshot.fields[field] &&
-                    configurationValueMatches(field, snapshot.fields[field]!.value, target),
+                    (document.targets?.find((descriptor) => descriptor.id === c.platform)?.fields[
+                      field
+                    ]
+                      ? configurationEqual(snapshot.fields[field]!.value, target)
+                      : configurationValueMatches(field, snapshot.fields[field]!.value, target)),
                 ),
               );
             } else if (step.check === "prompt")

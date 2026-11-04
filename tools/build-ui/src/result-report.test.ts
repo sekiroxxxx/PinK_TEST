@@ -16,6 +16,48 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   return { root, run, file: join(run, "result.json") };
 }
 
+test("runtime capability blocks remain distinct from missing materials in the same complete report", async (t) => {
+  const { file } = await fixture(t);
+  await writeFile(
+    file,
+    JSON.stringify({
+      kind: "pink-configuration-steps-result",
+      schemaVersion: 2,
+      outcome: "failed",
+      lifecycle: "finished",
+      runtimeCapabilities: [
+        { platform: "web-desktop", status: "ready", entry: { label: "本次实际分类" } },
+        { platform: "qa-extra", status: "blocked", reason: "执行能力不足：未识别配置控件" },
+      ],
+      cases: [
+        {
+          caseId: "material",
+          outcome: "blocked",
+          failure: { reason: "缺少材料引用 signing.path" },
+          steps: [],
+        },
+        {
+          caseId: "adapter",
+          outcome: "blocked",
+          failure: { reason: "执行能力不足：未识别配置控件" },
+          steps: [],
+        },
+      ],
+    }),
+  );
+  const html = await readFile(await writeResultReport(file), "utf8");
+  for (const text of [
+    "共 2 项",
+    "受阻 2",
+    "执行能力检查（与材料前提分别记录）",
+    "本次实际分类",
+    "执行器能力受阻",
+    "缺少材料引用 signing.path",
+  ])
+    assert.ok(html.includes(text), text);
+  assert.match(html, /通过 0/);
+});
+
 test("checkpoint and interrupted reports never imply finished acceptance", async (t) => {
   const { file } = await fixture(t);
   const data = {
@@ -175,6 +217,7 @@ test("failed/blocked cases show diagnostics, escaped text and real screenshot li
     "失败 1",
     "受阻 1",
     "通过 1",
+    "passed.case",
     "task-1",
     "SDK 缺失",
     "签名页面不截图",
@@ -182,8 +225,63 @@ test("failed/blocked cases show diagnostics, escaped text and real screenshot li
     "&lt;script&gt;",
   ])
     assert.ok(html.includes(expected), expected);
-  for (const unwanted of ["<script>", "test-password", "passed.case"])
+  for (const unwanted of ["<script>", "test-password"])
     assert.ok(!html.includes(unwanted), unwanted);
+});
+
+test("all-passed reports list each case in result order with its own task and recovery state", async (t) => {
+  const { file } = await fixture(t);
+  await writeFile(
+    file,
+    JSON.stringify({
+      kind: "pink-configuration-steps-result",
+      schemaVersion: 2,
+      outcome: "passed",
+      lifecycle: "finished",
+      buildAttempted: true,
+      cases: [
+        {
+          caseId: "web.copy<&>",
+          platform: "web-desktop",
+          outcome: "passed",
+          restoration: "not-required",
+          tasks: [
+            {
+              taskId: "task-web",
+              state: "success",
+              options: { keystorePassword: "private-signing-value" },
+            },
+          ],
+        },
+        {
+          caseId: "public.home",
+          target: { kind: "builder", category: "X-Device" },
+          outcome: "passed",
+          restoration: "passed",
+          tasks: [],
+        },
+      ],
+    }),
+  );
+  const html = await readFile(await writeResultReport(file), "utf8");
+  const table = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
+  assert.equal((table.match(/<tr>/g) ?? []).length, 2);
+  assert.match(table, /<td>1<\/td><td>web.copy&lt;&amp;&gt;<\/td>/);
+  assert.match(table, /<td>2<\/td><td>public.home<\/td>/);
+  assert.ok(table.indexOf("web.copy") < table.indexOf("public.home"));
+  for (const expected of [
+    "web-desktop",
+    "task-web",
+    "成功 (success)",
+    "公共主页 · X-Device",
+    "未关联构建任务",
+    "无需恢复",
+    "已恢复",
+  ])
+    assert.ok(table.includes(expected), expected);
+  assert.doesNotMatch(html, /private-signing-value|keystorePassword|<td>web.copy<&>/);
+  assert.match(html, /通过 2/);
+  assert.match(html, /本次没有失败、受阻或未完成用例/);
 });
 
 test("incomplete and fatal runs remain visible, without broken or external screenshot links", async (t) => {

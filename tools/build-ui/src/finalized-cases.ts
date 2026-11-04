@@ -15,6 +15,7 @@ import {
   type InputMaterials,
   type SceneContext,
 } from "./case-inputs.js";
+import { catalogReferenceEntries } from "./native-case-references.js";
 
 export type CaseValue = string | number | boolean | CaseValue[] | { [key: string]: CaseValue };
 export type CaseValues = Record<string, CaseValue>;
@@ -84,6 +85,55 @@ export async function selectFinalizedCases(
     ),
   );
   const sceneContext = await discoverScenes(source.project);
+  return selectCases(
+    catalog,
+    ids,
+    groups,
+    materials,
+    source,
+    (values) => resolveCaseInputs(values, materials, sceneContext, catalog.fieldTypes),
+    () => loadFormValidation(catalog, source.catalogPath),
+    sceneContext,
+  );
+}
+
+/** Symbolic definitions preserve references; this path never discovers or resolves local resources. */
+export async function selectCatalogDefinitionCases(
+  raw: CatalogDocument,
+  id: string,
+  endpoint?: "ui",
+): Promise<BuildCase[]> {
+  const catalog = caseContract.normalize(validateExecutableCatalog(raw));
+  return selectCases(
+    catalog,
+    id,
+    undefined,
+    {},
+    { captureInputs: true, endpoint },
+    async (values) => ({
+      values: structuredClone(values),
+      blockers: [],
+      materialRefs: [],
+      sceneInputs: {},
+    }),
+    async () => {
+      if (!catalog.formValidation) throw new Error("引用 FORM 样本必须内嵌 formValidation 定义");
+      return catalog.formValidation;
+    },
+  );
+}
+
+async function selectCases(
+  catalog: CatalogDocument,
+  ids: string | undefined,
+  groups: string | undefined,
+  materials: FinalMaterials,
+  source: { captureInputs?: boolean; endpoint?: "ui" },
+  resolveInputs: (values: CaseValues) => ReturnType<typeof resolveCaseInputs>,
+  formsSource: () => ReturnType<typeof loadFormValidation>,
+  sceneContext?: SceneContext,
+): Promise<BuildCase[]> {
+  const references = catalogReferenceEntries(catalog);
   const groupIds = (groups ?? "publish,debug,mixed,conditional").split(",").map((s) => s.trim());
   if (
     !groupIds.length ||
@@ -181,7 +231,7 @@ export async function selectFinalizedCases(
         kind: "ui-adapter",
         reason: "跨页面 L10N 项目启用/恢复操作尚未适配；未以当前启用状态冒充转换覆盖",
       });
-    const resolved = await resolveCaseInputs(values, materials, sceneContext, catalog.fieldTypes);
+    const resolved = await resolveInputs(values);
     assertSupportedValues(resolved.values, id, catalog.targets);
     blockers.push(...resolved.blockers.map((reason) => ({ kind: "material" as const, reason })));
     const definition: FinalCase = {
@@ -217,12 +267,17 @@ export async function selectFinalizedCases(
     if (!groupIds.includes(group)) continue;
     for (const platform of catalog.platforms) {
       const combo = platform.combinations.find((c) => c.template === group)!;
-      await make(platform, combo, combo.id, combo.title);
+      await make(
+        platform,
+        combo,
+        references.find((r) => r.combo === combo.id && r.variant === undefined)!.caseId,
+        combo.title,
+      );
       for (const [i, variant] of combo.variants.entries())
         await make(
           platform,
           combo,
-          `${combo.id}.variant-${i + 1}`,
+          references.find((r) => r.combo === combo.id && r.variant === i)!.caseId,
           `${combo.title} · ${variant.title}`,
           variant.values,
           undefined,
@@ -231,7 +286,7 @@ export async function selectFinalizedCases(
     }
   }
   if (groupIds.includes("conditional")) {
-    for (const scenario of catalog.conditionalScenarios) {
+    for (const [scenarioIndex, scenario] of catalog.conditionalScenarios.entries()) {
       for (const pid of scenario.representativePlatforms) {
         const platform = catalog.platforms.find((p) => p.id === pid)!;
         if (!platform || !scenario.platforms.includes(pid))
@@ -242,7 +297,7 @@ export async function selectFinalizedCases(
         await make(
           platform,
           uiOnly ? { ...baseline, values: {}, fieldCoverage: {} } : baseline,
-          scenario.representativePlatforms.length === 1 ? scenario.id : `${scenario.id}.${pid}`,
+          references.find((r) => r.scenario === scenarioIndex && r.platform === pid)!.caseId,
           scenario.title,
           scenario.valuesByPlatform[pid] ?? {},
           scenario,
@@ -252,12 +307,15 @@ export async function selectFinalizedCases(
   }
   if (ids?.split(",").some((id) => id.trim().startsWith("FORM-"))) {
     if (!groupIds.includes("conditional")) throw new Error("FORM 样本属于第四组 conditional");
-    const forms = await loadFormValidation(catalog, source.catalogPath);
+    const forms = await formsSource();
+    const formReferences = catalogReferenceEntries({ ...catalog, formValidation: forms });
     const sourceSha256 = formSourceHash(forms);
     for (const family of forms.cases)
       for (const sample of family.samples)
         for (const pid of sample.platforms) {
-          const caseId = `${sample.id}.${pid}`;
+          const caseId = formReferences.find(
+            (r) => r.origin.sampleId === sample.id && r.platform === pid,
+          )!.caseId;
           const blockers: FinalCase["blockers"] = [];
           const target = sample.executionByPlatform?.[pid] ?? sample.execution;
           const execution = target && structuredClone(target);
@@ -274,18 +332,10 @@ export async function selectFinalizedCases(
             for (const step of execution.setup ?? []) targets[step.field] = step.value;
             if (execution.value !== undefined) targets[execution.field] = execution.value;
           }
-          const resolved = await resolveCaseInputs(
-            targets,
-            materials,
-            sceneContext,
-            catalog.fieldTypes,
-          );
+          const resolved = await resolveInputs(targets);
           assertSupportedValues(resolved.values, caseId);
-          const prepared = await resolveCaseInputs(
+          const prepared = await resolveInputs(
             Object.fromEntries((execution?.prepare ?? []).map((step) => [step.field, step.value])),
-            materials,
-            sceneContext,
-            catalog.fieldTypes,
           );
           assertSupportedValues(prepared.values, caseId + ".prepare");
           blockers.push(
@@ -332,19 +382,7 @@ export async function selectFinalizedCases(
         }
   }
   if (catalog.executionOrder) {
-    const defined = new Set(
-      catalog.platforms.flatMap((p) =>
-        p.combinations.flatMap((c) => [
-          c.id,
-          ...c.variants.map((_, i) => `${c.id}.variant-${i + 1}`),
-        ]),
-      ),
-    );
-    for (const scenario of catalog.conditionalScenarios)
-      for (const pid of scenario.representativePlatforms)
-        defined.add(
-          scenario.representativePlatforms.length === 1 ? scenario.id : `${scenario.id}.${pid}`,
-        );
+    const defined = new Set(references.filter((r) => !r.form).map((r) => r.caseId));
     if (
       catalog.executionOrder.some((id) => !cases.some((c) => c.caseId === id) && !defined.has(id))
     )

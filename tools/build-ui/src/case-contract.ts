@@ -40,7 +40,8 @@ export interface FormValidationDocument {
   [key: string]: unknown;
 }
 export interface FieldType {
-  kind: "boolean" | "string" | "number" | "array" | "object";
+  kind: "boolean" | "string" | "number" | "array" | "object" | "scalar";
+  valueKinds?: Array<"string" | "number" | "boolean">;
   choices?: Array<string | number | boolean>;
   sensitive?: boolean;
 }
@@ -125,8 +126,13 @@ export function createCaseContract() {
       }
     } else if (type.kind === "object") {
       if (!object(value)) fail(path, "必须是对象");
-    } else if (typeof value !== type.kind || (typeof value === "number" && !Number.isFinite(value)))
-      fail(path, `必须是 ${type.kind}`);
+    } else if (
+      !(type.kind === "scalar"
+        ? type.valueKinds?.some((kind) => typeof value === kind)
+        : typeof value === type.kind) ||
+      (typeof value === "number" && !Number.isFinite(value))
+    )
+      fail(path, `必须是 ${type.kind === "scalar" ? type.valueKinds?.join("/") : type.kind}`);
     if (type.choices && !type.choices.includes(value as string | number | boolean))
       fail(path, "不是已声明的合法候选");
   }
@@ -137,8 +143,20 @@ export function createCaseContract() {
     if (typeof doc.revision !== "string" || !doc.revision.trim()) fail("revision", "需要修订标记");
     if (!object(doc.fieldTypes)) fail("fieldTypes", "需要字段合同");
     for (const [key, type] of Object.entries(doc.fieldTypes)) {
-      if (!object(type) || !["boolean", "string", "number", "array", "object"].includes(type.kind))
+      if (
+        !object(type) ||
+        !["boolean", "string", "number", "array", "object", "scalar"].includes(type.kind)
+      )
         fail(`fieldTypes.${key}`, "字段类型无效");
+      if (
+        type.kind === "scalar"
+          ? !Array.isArray(type.valueKinds) ||
+            type.valueKinds.length < 2 ||
+            new Set(type.valueKinds).size !== type.valueKinds.length ||
+            type.valueKinds.some((kind) => !["string", "number", "boolean"].includes(kind))
+          : type.valueKinds !== undefined
+      )
+        fail(`fieldTypes.${key}`, "混合标量需要显式且不重复的基本类型集合");
       if (
         type.choices !== undefined &&
         (!Array.isArray(type.choices) ||

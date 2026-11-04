@@ -4,7 +4,65 @@
 
 需要 Windows、Node.js 24+ 和已能手动正常构建的工程及 SDK 环境。包和工程由启动参数显式指定，工具不修改引擎设置。1958 包及后续包的历史证据以各结果文件记载的版本、用例和范围为准，不替代当前版本的新入口验收。
 
+## 当前实例入口与执行能力
+
+统一 v2 启动入口从运行实例的 Builder 活动容器标识发现入口，核对 `SUD.pink-builder` Webview 后读取实际首页和平台卡片，再把用例平台对应到唯一入口。平台用例不使用保存的分类显示名导航，不维护 PinK 版本到分类名称的映射。卡片有平台 ID 时按 ID 核对，否则使用已有目标描述中的精确卡片名与配置页标题合同；无法唯一对应会明确受阻，多个匹配或上下文身份失效仍停止后续操作。原有公共分类目标只在其已知成员能对应唯一实际入口时复用，不猜选第一个容器。
+
+首页须等嵌套文档完成并实际收到平台卡片后才建立路由；页脚先出现、卡片仍为空属于加载未完成，不能据此判定平台缺失。OpenPaaS 等待已有游戏时持续核对配置页归属；账号/已有游戏前提不足可受阻收尾，页面身份失效仍立即停止，不借机自动重试或放宽归属检查。
+
+任务中的初始场景可由 SDK 在构建时从 UUID 解析为 `db://` 路径。入队和终态均用捕获时从当前工程 `.scene.meta` 独立发现的同一场景身份核对；不从任务自己声明的 `scenes` 推导预期，不接受未知、歧义或不同场景。入口发现遵守停止信号，长期 UI 适配器使用独立的安全收尾信号，使已确认归属的关页和恢复不会被普通停止请求本身拦截。
+
+配置页打开并确认归属后、写入前，检查本轮标准控件与构建按钮的适配能力。前序配置可能改变显示条件时，检查记为延后，实际控件仍须在对应写入前通过原有适配器核对。标准目标仍使用现有 `targets` 字段描述，新同类平台、标准字段和枚举值通过用例描述及实际 UI 接入；全新页面机制或控件仍需适配。入口、控件不支持与 Catalog 的材料受阻分别记录在结果及 HTML 报告中；完整选择、顺序、计划完整性和安全收尾不变。此段描述实现机制，实际版本与平台通过情况以对应实机结果为准。
+
+## 标准目标配置检查补充（2026-11-02）
+
+沿用 `describeNativeCaseCapabilities().targetsSchema`、组合校验/组装及原生 v2 入口，不增加操作或 IPC。以下新增能力只有定向离线证据，尚待独立 QA 做真实 UI 复查；不表示新平台或候选已经实机通过。
+
+纯 `platform.probe` 与对应 `assert(check=probe)` 链路允许 `finally: []`，不会为了收尾打开不存在的平台。平台缺失仍须 `homeScope.readyLabels` 对应范围完整就绪，否则受阻。任何打开配置页或修改配置的链路仍须原有打开/关闭收尾；记录、修改、恢复及上下文归属规则不放宽。例如下列 case 绑定到另行声明的 `qa-absent` 标准目标：
+
+```json
+{
+  "caseId": "qa.platform.absent",
+  "platform": "qa-absent",
+  "steps": [
+    { "id": "probe", "op": "platform.probe" },
+    {
+      "id": "expected",
+      "op": "assert",
+      "check": "probe",
+      "observation": "probe",
+      "expected": { "presence": "absent" }
+    }
+  ],
+  "finally": []
+}
+```
+
+标准枚举可显式声明混合标量。以下是 `targets[].fields.sourceMaps` 的字段描述，值 `false`、`true`、`"inline"` 保留各自机器类型：
+
+```json
+{
+  "kind": "scalar",
+  "control": "enum",
+  "valueKinds": ["boolean", "string"],
+  "locator": { "kind": "option-key", "key": "sourceMaps" },
+  "scope": { "readyKeys": ["name", "buildPath"] }
+}
+```
+
+`valueKinds` 必须显式列出至少两种不重复的 `string/number/boolean`，仅允许用于 `kind=scalar/control=enum`；旧单一 kind 不变。字段 Schema 通过 `oneOf` 提供单一类型和混合枚举两分支，前端消费其中的 `properties/required/valueKinds.items.enum`。显式描述字段的设置、候选选择、回读、独立预期和恢复均保留类型，不沿用旧平台字段的值转换；预期布尔 `false` 不等于字符串 `"false"`。新目标/扩展字段仍仅配置检查，不能提交构建，敏感字段和跨平台限制不变。
+
+读取候选后，工具只清理自己打开的弹层：核对原触发器、`aria-controls` 关联列表及焦点归属，发送一次 Escape，等待展开状态与原列表可见性均关闭，并核对配置值未因关闭变化。不会重试输入、选择替代候选或点击其他控件来关闭；无法安全确认时仍报告 `standard-enum.dismiss` 并停止后续操作。配置检查计划继续要求 `willSubmit=false`。
+
 ## 组合用例入口（2026-10-28）
+
+保存与本轮准备分别调用 `await validateCaseComposition(definition, selection?)`，返回 `{valid,definitionSha256,contextChecked:false,diagnostics,deferredChecks}`，不返回可执行 assembly。省略 selection 校验全部实例；传入时应用本轮覆盖/主步骤选择后校验。空定义可以保存，显式空选择仍报错。作者态只展开符号定义，复用原步骤生成器和依赖校验；不会读取工程、材料文件或 PinK。材料/场景角色、适用性及明确保留的执行支持缺口进入 deferredChecks，不能当作可运行；未知操作、错误类型/引用/静态依赖仍是错误。未实例化片段先检查结构、符号和引用循环，参数绑定后的生命周期检查明确保留待核对。原始 Catalog 中有明确受阻/不适用声明但尚无操作链的样本只作保留项，不可改写其不存在的操作输入或预期。
+
+`listNativeCaseReferences(document)` 是纯定义清单，返回 `{documentSha256,items:[{caseId,platform?,target?,title,origin}]}`。origin 提供 kind、sourcePath 和对应 combinationId/scenarioId/familyId/sampleId；清单不证明可执行。FORM-C01.s01 的 web-desktop 正式身份是 FORM-C01.s01.web-desktop，样本别名不作为唯一 case-ref。创建引用、Catalog 运行选择共用清单展开规则，前端直接执行和插入组合都使用正式 caseId，不拼后缀；跨来源缓存须连同来源哈希保存。该接口只读取传入的内嵌定义，不混入本机外部表单样本。
+
+宿主可沿现有 authorAutomation 转发 `validateComposition`（definition/selection?）和 `listCaseReferences`（document）；工作台桥接由前端工程负责。本轮真实 preview 仍独立调用 `composeNativeCases(...,{project,materials})` 并冻结计划，不过滤 case-blocked，不因保存通过放宽运行前提。两个函数从 `dist/native-case-contract.js` 再导出；本批仅格式、类型静态检查及工具编译，未运行功能/模拟自动化或产品构建，待独立 QA 复查。
+
+边界保留：前端把 Catalog 引用“创建独立副本”时仍调用 compose；若没有工程/材料上下文，含符号材料的副本可能受阻。本批不新增拆链或副本接口、不放宽校验，普通复制引用不受影响；由独立 QA 记录和复查。
 
 宿主可从 `dist/native-case-contract.js` 导入 `describeCaseComposition/createCaseComposition/composeNativeCases/mapCompositionResults`。组合 JSON 支持有序分组、原生用例引用、参数化片段和显式动作链；本轮可选择实例、调整顺序和覆盖输入。依赖、断言及收尾不完整时只返回诊断，不生成可执行的部分结果。
 

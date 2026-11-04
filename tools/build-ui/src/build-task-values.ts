@@ -2,6 +2,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { Task } from "./common.js";
 import type { CaseValues } from "./finalized-cases.js";
 import { existingFields, fieldFingerprint } from "./existing-platforms.js";
+import type { SceneCandidate } from "./case-inputs.js";
 function same(a: unknown, b: unknown): boolean {
   return Array.isArray(a) && Array.isArray(b)
     ? isDeepStrictEqual([...a].sort(), [...b].sort())
@@ -9,7 +10,7 @@ function same(a: unknown, b: unknown): boolean {
 }
 export function assertBuildTaskValues(
   task: Task,
-  evidence: { values: CaseValues; preserved: string[] },
+  evidence: { values: CaseValues; preserved: string[]; sceneCandidates?: SceneCandidate[] },
 ) {
   if (!task.caseOptions) throw new Error("任务没有四组参数观察快照");
   const omittedDefaults = new Map(
@@ -22,6 +23,18 @@ export function assertBuildTaskValues(
   for (const [key, ui] of Object.entries(evidence.values)) {
     let expected: unknown = ui,
       actual = task.caseOptions[key];
+    if (key === "startScene" && evidence.sceneCandidates) {
+      // The SDK can resolve UUID -> db:// during execution. Both sides must identify
+      // the same independently discovered project scene; task.scenes is not an oracle.
+      const identify = (value: unknown) =>
+        evidence.sceneCandidates!.filter((scene) => value === scene.uuid || value === scene.path);
+      const fromUi = identify(ui),
+        fromTask = identify(actual);
+      if (fromUi.length !== 1 || fromTask.length !== 1 || fromUi[0].uuid !== fromTask[0].uuid)
+        throw new Error("四组任务参数不一致：startScene（场景身份未能独立对应）");
+      expected = fromUi[0].uuid;
+      actual = fromTask[0].uuid;
+    }
     if (key === "packages.localization-editor.targetLanguageMap") {
       // The view adds every available Catalog as an unchecked checkbox, even when
       // the form/task map contains only the selected locales. Missing and false

@@ -18,7 +18,7 @@ import { pinkExecutable } from "./offline-plan.js";
 import { sealPlan, valueHash, contentHash } from "./plan-integrity.js";
 import { startSession, findWindow, engineSelection } from "./session.js";
 import { assertWindowIdentity } from "./workspace-identity.js";
-import { waitFor, type Options } from "./common.js";
+import { type Options } from "./common.js";
 import { readForm, type FormView } from "./configuration-page.js";
 import { createResultCheckpoint, type CheckpointWriteError } from "./result-checkpoint.js";
 import { platformCatalog, platformEntry } from "./platform-catalog.js";
@@ -26,6 +26,11 @@ import { catalogStepResults } from "./catalog-steps-loader.js";
 import { configurationErrorDetail } from "./configuration-diagnostics.js";
 import { buildRunProgress, createProgressOutput } from "./run-progress.js";
 import { readBuilderHome } from "./builder-checks.js";
+import {
+  discoverBuilderRoutes,
+  resolvePlatformRoute,
+  type DiscoveredBuilder,
+} from "./builder-routing.js";
 
 export async function configurationStepsLaunchPlan(
   loaded: LoadedConfigurationSteps,
@@ -268,43 +273,114 @@ export async function runConfigurationStepsFromStartup(
     );
     const descriptor = (platform: string) =>
       loaded.document.targets?.find((p) => p.id === platform) ?? platformEntry(platform);
-    const categoryFor = (c: (typeof loaded.document.cases)[number]) =>
-      "target" in c && c.target ? c.target.category : descriptor(c.platform!).category;
-    const category = categoryFor(loaded.document.cases[0]);
-    await waitFor(
-      "工程构建分类就绪",
-      async () =>
-        (await page.getByRole("tab", { name: category, exact: true }).count()) === 1
-          ? true
-          : undefined,
-      180_000,
+    data.phase = "connecting";
+    await publish();
+    const observations = new Map<string, unknown>();
+    const discovery = await discoverBuilderRoutes(
+      page,
+      connection.endpoint,
+      session,
       startupSignal,
+      options.configurationTimeoutMs,
+      async (binding) => {
+        builder = binding.builder;
+        builders.set(binding.entry.key, binding.builder);
+        observations.set(binding.entry.key, { entry: binding.entry, home: binding.home });
+        data.entryDiscovery = { entries: [...observations.values()] };
+        await publish();
+      },
+      abort.signal,
     );
-    const activate = async (category: string) => {
-      await session!.verify();
-      const tab = page.getByRole("tab", { name: category, exact: true });
-      if ((await tab.getAttribute("aria-expanded")) !== "true")
-        await tab.click({ timeout: 60_000 });
-      await waitFor(
-        `切换 ${category} 构建分类`,
-        async () => ((await tab.getAttribute("aria-expanded")) === "true" ? true : undefined),
-        30_000,
-        abort.signal,
-      );
-      builder = builders.get(category)!;
-    };
-    for (const category of new Set(loaded.document.cases.map(categoryFor))) {
-      checkExecutionStop(stop.signal);
-      builder = await Builder.open(
-        page,
-        connection.endpoint,
-        abort.signal,
-        category,
-        options.configurationTimeoutMs,
-        v2,
-      );
-      builders.set(category, builder);
+    const routes = new Map<string, ReturnType<typeof resolvePlatformRoute>>();
+    const probeScopes = new Map<string, DiscoveredBuilder>();
+    const unsupported = new Map<string, ConfigurationOperationError>();
+    for (const platform of new Set(
+      loaded.document.cases.flatMap((c) => (c.platform ? [c.platform] : [])),
+    )) {
+      try {
+        routes.set(platform, resolvePlatformRoute(discovery.bindings, descriptor(platform)));
+      } catch (error) {
+        if (!(error instanceof ConfigurationOperationError) || error.disposition !== "blocked")
+          throw error;
+        const target = loaded.document.targets?.find((target) => target.id === platform);
+        const onlyProbe = loaded.document.cases
+          .filter((c) => c.platform === platform)
+          .every((c) => c.steps.every((s) => s.op === "platform.probe" || s.op === "assert"));
+        const readyLabels = target?.homeScope?.readyLabels;
+        const scopes =
+          onlyProbe && readyLabels?.length
+            ? discovery.bindings.filter(
+                (binding) =>
+                  binding.home.complete &&
+                  readyLabels.every(
+                    (label) =>
+                      binding.home.cards.filter((card) => card.label === label).length === 1,
+                  ),
+              )
+            : [];
+        if (scopes.length === 1) {
+          probeScopes.set(platform, scopes[0]);
+          continue;
+        }
+        unsupported.set(platform, error);
+      }
     }
+    data.runtimeCapabilities = [
+      ...new Set(loaded.document.cases.flatMap((c) => (c.platform ? [c.platform] : []))),
+    ].map((platform) => ({
+      platform,
+      kind: "execution-support",
+      status: unsupported.has(platform) ? "blocked" : "ready",
+      ...(unsupported.has(platform)
+        ? { reason: unsupported.get(platform)!.message }
+        : { entry: (routes.get(platform)?.binding ?? probeScopes.get(platform))!.entry }),
+    }));
+    await publish();
+    const routeFor = (platform: string) => {
+      const route = routes.get(platform);
+      if (!route)
+        throw (
+          unsupported.get(platform) ??
+          new ConfigurationOperationError("context", "平台缺少已核对的运行时入口", "stop")
+        );
+      return route;
+    };
+    const activateBinding = async (binding: DiscoveredBuilder) => {
+      await discovery.activate(binding);
+      builder = binding.builder;
+    };
+    // Legacy public scopes remain logical scopes. Infer their unique entry from actual members;
+    // platform cases never use a persisted category title to navigate.
+    const publicBinding = (category: string) => {
+      const direct = discovery.bindings.filter(
+        (binding) => binding.entry.label === category || binding.home.categoryId === category,
+      );
+      const members = platformCatalog
+        .filter((platform) => platform.category === category)
+        .flatMap((platform) => {
+          try {
+            return [resolvePlatformRoute(discovery.bindings, platform).binding];
+          } catch (error) {
+            if (error instanceof ConfigurationOperationError && error.disposition === "blocked")
+              return [];
+            throw error;
+          }
+        });
+      const candidates = [...new Set(direct.length ? direct : members)];
+      if (candidates.length !== 1)
+        throw new ConfigurationOperationError(
+          "context",
+          "公共构建目标无法对应唯一的运行时入口",
+          "stop",
+          {
+            diagnostic: {
+              phase: "entry-discovery",
+              observations: { category, entries: candidates.map((binding) => binding.entry) },
+            },
+          },
+        );
+      return candidates[0];
+    };
     if (
       v2 &&
       loaded.document.cases.some((c) =>
@@ -315,16 +391,12 @@ export async function runConfigurationStepsFromStartup(
         c.steps.flatMap((s) => ("fields" in s ? s.fields : "field" in s ? [s.field] : [])),
       );
       buildRuntime = await createStepBuildPort(
-        [...builders].map(([category, builder]) => ({
-          builder,
-          platforms: [
-            ...new Set(
-              loaded.document.cases
-                .filter((c) => c.platform && categoryFor(c) === category)
-                .map((c) => c.platform!),
-            ),
-          ],
-          activate: () => activate(category),
+        discovery.bindings.map((binding) => ({
+          builder: binding.builder,
+          platforms: [...routes]
+            .filter(([, route]) => route.binding === binding)
+            .map(([platform]) => platform),
+          activate: () => activateBinding(binding),
         })),
         session,
         options.project,
@@ -332,7 +404,7 @@ export async function runConfigurationStepsFromStartup(
         abort.signal,
       );
     } else if (v2 && loaded.document.cases.some((c) => c.platform === "openpaas"))
-      await builders.get(descriptor("openpaas").category)!.installProbe([], true);
+      if (routes.has("openpaas")) await routeFor("openpaas").binding.builder.installProbe([], true);
     data.phase = "executing";
     await publish();
     const result = await runConfigurationSteps(loaded, {
@@ -345,10 +417,15 @@ export async function runConfigurationStepsFromStartup(
       verifySource: loaded.verifySource,
       evidenceKind: "runtime",
       build: buildRuntime?.port,
+      checkCapabilities: async (operations, steps) => {
+        if (!(operations instanceof BuilderConfiguration))
+          throw new Error("缺少运行时配置能力检查适配");
+        return operations.checkCapabilities(steps);
+      },
       builderUi: {
         open: async (target) => {
           await session!.verify();
-          await activate(target.category);
+          await activateBinding(publicBinding(target.category));
           if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
             throw new ConfigurationOperationError(
               "context",
@@ -359,13 +436,13 @@ export async function runConfigurationStepsFromStartup(
         },
         read: async (target) => {
           await session!.verify();
-          if (builder !== builders.get(target.category))
+          if (builder !== publicBinding(target.category).builder)
             throw new ConfigurationOperationError("context", "公共检查所在分类已经改变", "stop");
           return { category: target.category, ...(await builder!.caseDom(readBuilderHome)) };
         },
         home: async (target) => {
           await session!.verify();
-          await activate(target.category);
+          await activateBinding(publicBinding(target.category));
           if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
             throw new ConfigurationOperationError(
               "context",
@@ -379,11 +456,14 @@ export async function runConfigurationStepsFromStartup(
         await session!.verify();
         if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
           throw new ConfigurationOperationError("context", "平台探查不能接管已有配置页", "stop");
-        await activate(descriptor(platform).category);
+        const route = routes.get(platform);
+        await activateBinding(
+          route?.binding ?? probeScopes.get(platform) ?? routeFor(platform).binding,
+        );
         await builder!.home(() => session!.verify());
         const target = loaded.document.targets?.find((t) => t.id === platform);
         const observed = await builder!.probePlatform(
-          descriptor(platform).label,
+          route?.card.label ?? descriptor(platform).label,
           target?.homeScope?.readyLabels,
         );
         await session!.verify();
@@ -430,7 +510,8 @@ export async function runConfigurationStepsFromStartup(
             "已有未归属配置页，拒绝隐式关闭或接管",
             "stop",
           );
-        await activate(descriptor(platform).category);
+        const route = routeFor(platform);
+        await activateBinding(route.binding);
         const target = loaded.document.targets?.find((p) => p.id === platform);
         const form = await BuilderConfiguration.open(
           builder!,
@@ -438,6 +519,7 @@ export async function runConfigurationStepsFromStartup(
           platform,
           abort.signal,
           target,
+          route.card.label,
         );
         if (v2) return form;
         const current = formValues(await builder!.configurationPage());
@@ -489,6 +571,7 @@ export async function runConfigurationStepsFromStartup(
     }
   } catch (error) {
     data.fatal = error instanceof Error ? error.message : "步骤启动或收尾失败";
+    data.fatalDiagnostic = configurationErrorDetail(error);
     data.outcome = "failed";
   } finally {
     data.phase = "cleanup";

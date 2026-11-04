@@ -27,6 +27,7 @@ interface StandardObservation extends TargetObservation {
   valueKind?: string;
   selector?: string;
   listOpen?: boolean;
+  listId?: string;
   candidates?: Array<CandidateObservation["items"][number] & { selector?: string; index?: number }>;
   candidatesComplete?: boolean;
 }
@@ -367,6 +368,7 @@ export function observeStandardField(
       const lists = listId ? [...document.querySelectorAll(`[id="${CSS.escape(listId)}"]`)] : [];
       if (lists.length > 1) return { ...result, reason: "ambiguous" };
       const list = lists[0];
+      result.listId = listId ?? undefined;
       result.listOpen = el.getAttribute("aria-expanded") === "true";
       if (result.listOpen && list && visible(list)) {
         const options = [...list.querySelectorAll('[role="option"]')];
@@ -388,7 +390,9 @@ export function observeStandardField(
     }
   }
   result.valueKind = typeof value;
-  if (!scalar(value) || typeof value !== target.kind) return { ...result, reason: "unsupported" };
+  const valueKinds = target.kind === "scalar" ? target.valueKinds! : [target.kind];
+  if (!scalar(value) || !valueKinds.some((kind) => typeof value === kind))
+    return { ...result, reason: "unsupported" };
   result.value = value;
   result.selector = path(el);
   result.readable = true;
@@ -470,8 +474,11 @@ export class StandardFields {
   }
   private unreadable(value: StandardObservation, target: StandardFieldTarget) {
     return this.block(
-      value.valueKind && value.valueKind !== target.kind
-        ? `value-type: expected=${target.kind}, actual=${value.valueKind}`
+      value.valueKind &&
+        !(target.kind === "scalar" ? target.valueKinds! : [target.kind]).some(
+          (kind) => kind === value.valueKind,
+        )
+        ? `value-type: expected=${target.kind === "scalar" ? target.valueKinds!.join("/") : target.kind}, actual=${value.valueKind}`
         : (value.reason ?? "incomplete-scope"),
     );
   }
@@ -509,6 +516,7 @@ export class StandardFields {
     const opened = view.candidates === undefined && !view.listOpen;
     if (opened && !view.writable) throw this.block("disabled");
     const selector = view.selector;
+    let listId = view.listId;
     let originalError: unknown;
     try {
       if (opened)
@@ -523,6 +531,7 @@ export class StandardFields {
         15_000,
         this.signal,
       );
+      listId = view.listId;
       if (!view.candidatesComplete) throw this.block("incomplete-scope");
       return await action(view);
     } catch (error) {
@@ -532,15 +541,44 @@ export class StandardFields {
       if (opened) {
         try {
           const current = await this.observe(field, target);
+          if (current.selector !== selector || !current.readable)
+            throw new Error("原下拉目标已变化");
+          const valueBeforeDismiss = current.value;
           if (current.listOpen) {
-            if (current.selector !== selector) throw new Error("原下拉目标已变化");
-            await this.builder.click("case-control", selector, undefined, undefined, async () => {
-              if ((await this.observe(field, target)).selector !== selector)
-                throw new Error("原下拉目标已失效");
-            });
+            if (!listId || current.listId !== listId) throw new Error("原候选弹层已变化");
+            await this.builder.caseDismissSelect(
+              selector,
+              listId,
+              this.guard(field, target, current),
+            );
           }
-          const closed = await this.observe(field, target);
-          if (closed.listOpen) throw new Error("候选弹层仍打开");
+          await waitFor(
+            "标准候选弹层关闭",
+            async () => {
+              const closed = await this.observe(field, target);
+              if (
+                closed.selector !== selector ||
+                !closed.readable ||
+                closed.value !== valueBeforeDismiss
+              )
+                throw new Error("关闭弹层时原目标或配置值发生变化");
+              const hidden =
+                !listId ||
+                (await this.builder.caseDom((document, id) => {
+                  const lists = [...document.querySelectorAll(`[id="${CSS.escape(id)}"]`)];
+                  if (lists.length > 1) throw new Error("原候选弹层不再唯一");
+                  const list = lists[0];
+                  return (
+                    !list ||
+                    !list.getClientRects().length ||
+                    document.defaultView!.getComputedStyle(list).visibility === "hidden"
+                  );
+                }, listId));
+              return !closed.listOpen && hidden ? true : undefined;
+            },
+            3000,
+            this.signal,
+          );
         } catch (cause) {
           throw new ConfigurationOperationError("context", "候选弹层无法安全清理", "stop", {
             cause: originalError ?? cause,
@@ -567,7 +605,9 @@ export class StandardFields {
         matches.length !== 1 ||
         matches[0].disabled ||
         matches[0].value === undefined ||
-        typeof matches[0].value !== target.kind
+        !(target.kind === "scalar" ? target.valueKinds! : [target.kind]).some(
+          (kind) => typeof matches[0].value === kind,
+        )
       )
         throw this.block(matches.length > 1 ? "ambiguous" : "unavailable-candidate");
       const candidate = view.candidates!.find((item) => item === matches[0])!;

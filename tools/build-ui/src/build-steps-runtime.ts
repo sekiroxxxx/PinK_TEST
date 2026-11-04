@@ -129,13 +129,24 @@ export async function createStepBuildPort(
           );
         return candidate.uuid;
       });
-      values.startScene = configuration.startSceneId;
+      const initial = scenes.candidates.find(
+        (scene) =>
+          scene.uuid === configuration.startSceneId || scene.path === configuration.startSceneId,
+      );
+      if (!initial || !(values.scenes as string[]).includes(initial.uuid))
+        throw new ConfigurationOperationError(
+          "precondition",
+          "初始场景无法对应到当前工程的已选资源",
+          "blocked",
+        );
+      values.startScene = initial.uuid;
       await operations.assertSnapshotCurrent(snapshot);
       if (!configurationEqual(configuration, await builder.readConfiguration(["debug"])))
         throw new ConfigurationOperationError("snapshot", "配置身份在回读期间发生变化", "stop");
       return {
         configuration,
         values,
+        sceneCandidates: structuredClone(scenes.candidates),
         stages: stages.groups,
         ...(supplement ? { preserved: supplement.preserved } : {}),
       };

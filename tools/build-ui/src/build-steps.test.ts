@@ -8,7 +8,7 @@ import {
   type LoadedConfigurationSteps,
 } from "./configuration-steps-contract.js";
 import { runConfigurationSteps } from "./configuration-steps.js";
-import { ExecutionContext } from "./configuration-context.js";
+import { ExecutionContext, ConfigurationOperationError } from "./configuration-context.js";
 import { ConfigurationOperations, type ConfigurationPort } from "./configuration-operations.js";
 import type { BuildStepsDocument } from "./build-steps-contract.js";
 import type { BuildStepsPort } from "./build-steps.js";
@@ -185,6 +185,41 @@ function fixture(
     },
   };
 }
+
+test("runtime capability refusal closes the owned page before continuing, without writes or submission", async () => {
+  const document = structuredClone(base);
+  document.cases = [
+    document.cases[0],
+    { ...structuredClone(document.cases[0]), caseId: "following" },
+  ];
+  const f = fixture();
+  let checked = 0;
+  const result = await runConfigurationSteps(loaded(document), {
+    ...f.env,
+    checkCapabilities: async () => {
+      if (++checked === 1)
+        throw new ConfigurationOperationError(
+          "precondition",
+          "执行能力不足：缺少标准控件",
+          "blocked",
+          {
+            diagnostic: {
+              phase: "runtime-capability",
+              observations: { kind: "execution-support" },
+            },
+          },
+        );
+    },
+  });
+  assert.equal(result.cases[0].outcome, "blocked");
+  assert.equal(result.cases[0].tasks?.length, 0);
+  assert.equal(result.cases[1].outcome, "passed");
+  assert.equal(
+    result.cases[0].steps.find((step) => step.operation === "config.close")?.outcome,
+    "passed",
+  );
+  assert.equal(f.clicks(), 1);
+});
 
 test("v2 JSON changes lifecycle and configuration order; real shared operations submit, collect and restore", async () => {
   const a = fixture(),

@@ -23,6 +23,11 @@ import { fieldFingerprint } from "./existing-platforms.js";
 import { readOpenpaasPage, assertExistingGameSelectable, type OpenpaasGame } from "./openpaas.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
 import { builderUiLabels } from "./builder-ui-labels.js";
+import {
+  activateBuilderEntry,
+  readBuilderHomeScope,
+  type BuilderEntry,
+} from "./builder-entries.js";
 
 interface Probe {
   owner: string;
@@ -95,20 +100,24 @@ export class Builder {
     page: Page,
     endpoint: string,
     signal: AbortSignal,
-    category = "X-Device",
+    category: string | BuilderEntry = "X-Device",
     configurationTimeoutMs = 120_000,
     readOnly = false,
+    cleanupSignal = signal,
   ): Promise<Builder> {
     // The activity tabs avoid the toolbar menu overlapping editor Webviews.
     if (!readOnly) await page.keyboard.press("Escape");
-    const tab = page.getByRole("tab", { name: category, exact: true });
-    if ((await tab.getAttribute("aria-expanded")) !== "true") await tab.click({ timeout: 60_000 });
-    await waitFor(
-      `展开 ${category} 构建分类`,
-      async () => ((await tab.getAttribute("aria-expanded")) === "true" ? true : undefined),
-      30_000,
-      signal,
-    );
+    if (typeof category === "string") {
+      const tab = page.getByRole("tab", { name: category, exact: true });
+      if ((await tab.getAttribute("aria-expanded")) !== "true")
+        await tab.click({ timeout: 60_000 });
+      await waitFor(
+        `展开 ${category} 构建分类`,
+        async () => ((await tab.getAttribute("aria-expanded")) === "true" ? true : undefined),
+        30_000,
+        signal,
+      );
+    } else await activateBuilderEntry(page, category, signal);
     const target = await waitFor(
       "可见 Builder Webview",
       async () => {
@@ -160,7 +169,7 @@ export class Builder {
         60_000,
         signal,
       );
-      return new Builder(page, cdp, target.name, signal, configurationTimeoutMs);
+      return new Builder(page, cdp, target.name, cleanupSignal, configurationTimeoutMs);
     } catch (error) {
       cdp.close();
       throw error;
@@ -775,6 +784,10 @@ export class Builder {
     );
   }
 
+  async discoverHome() {
+    return this.caseDom(readBuilderHomeScope);
+  }
+
   async configurationPage(): Promise<FormView> {
     let previous = "";
     let stableAt = Date.now();
@@ -800,23 +813,72 @@ export class Builder {
     );
   }
 
-  async openpaasPage() {
+  async openpaasPage(verify?: () => Promise<void>) {
+    let last: {
+      uiFound: boolean;
+      disabled?: boolean;
+      candidateCount?: number;
+      gamesObserved: boolean;
+    } = { uiFound: false, gamesObserved: false };
     return waitFor(
       "OpenPaaS账号的已有游戏列表及UI联动稳定",
       async () => {
+        await verify?.();
         const ui = await this.cdp.dom(readOpenpaasPage);
         const games = await this.cdp.dom(
           (document) => (document.defaultView as ProbeWindow).__pinkBuildUiProbe?.openpaasGames,
         );
+        await verify?.();
+        last = {
+          uiFound: !!ui,
+          disabled: ui?.disabled,
+          candidateCount: ui?.ids.length,
+          gamesObserved: !!games,
+        };
         if (!ui || ui.disabled || !games) return undefined;
-        if (!games.length) throw new Error("当前账号没有已有游戏；不会创建游戏");
+        if (!games.length)
+          throw new ConfigurationOperationError(
+            "precondition",
+            "当前账号没有已有游戏；不会创建游戏",
+            "blocked",
+            {
+              diagnostic: {
+                phase: "platform-prerequisite",
+                observations: { kind: "account-or-service", platform: "openpaas", ...last },
+              },
+            },
+          );
         if (ui.ids.length !== games.length || games.some((game) => !ui.ids.includes(game.id)))
           return undefined;
         return { ...ui, games };
       },
       this.configurationTimeoutMs,
       this.signal,
-    );
+    ).catch((cause) => {
+      if (
+        !(cause instanceof Error) ||
+        cause.message !== "等待超时：OpenPaaS账号的已有游戏列表及UI联动稳定"
+      )
+        throw cause;
+      throw new ConfigurationOperationError(
+        "precondition",
+        last.uiFound
+          ? "OpenPaaS 账号、已有游戏或服务前提尚未就绪，未提交构建"
+          : "执行能力不足：未识别 OpenPaaS 已有游戏控件，未提交构建",
+        "blocked",
+        {
+          cause,
+          diagnostic: {
+            phase: last.uiFound ? "platform-prerequisite" : "runtime-capability",
+            observations: {
+              kind: last.uiFound ? "account-or-service" : "execution-support",
+              platform: "openpaas",
+              ...last,
+            },
+          },
+        },
+      );
+    });
   }
 
   async selectOpenpaasGame(id: string, beforeInput?: () => Promise<void>): Promise<void> {
@@ -1569,7 +1631,7 @@ export class Builder {
     await this.page.mouse.move(x, y);
   }
 
-  private async assertCaseKeyboardFocus(selector: string): Promise<void> {
+  private async assertCaseKeyboardFocus(selector: string, descendants = false): Promise<void> {
     await waitFor(
       "构建配置控件取得键盘焦点（未发送按键）",
       async () => {
@@ -1579,15 +1641,64 @@ export class Builder {
             document.activeElement.getAttribute("name") === name,
           this.hostName,
         );
-        const inner = await this.cdp.dom((document, selector) => {
-          const control = document.querySelector(selector);
-          return control !== null && document.activeElement === control;
-        }, selector);
+        const inner = await this.cdp.dom(
+          (document, selector, descendants) => {
+            const controls = document.querySelectorAll(selector);
+            const control = controls[0];
+            return (
+              controls.length === 1 &&
+              (document.activeElement === control ||
+                (descendants && control.contains(document.activeElement)))
+            );
+          },
+          selector,
+          descendants,
+        );
         return outer && inner ? true : undefined;
       },
       3_000,
       this.signal,
     );
+  }
+
+  /** Dismiss only the focused listbox controlled by this still-owned combobox. */
+  async caseDismissSelect(
+    selector: string,
+    listId: string,
+    beforeInput?: () => Promise<void>,
+  ): Promise<void> {
+    const focusOwner = () =>
+      this.caseDom(
+        (document, selector, id) => {
+          const controls = document.querySelectorAll(selector);
+          const control = controls[0];
+          const listSelector = `[id="${CSS.escape(id)}"]`;
+          const lists = document.querySelectorAll(listSelector);
+          const list = lists[0];
+          if (
+            controls.length !== 1 ||
+            control.getAttribute("role") !== "combobox" ||
+            control.getAttribute("aria-controls") !== id ||
+            control.getAttribute("aria-expanded") !== "true" ||
+            lists.length !== 1 ||
+            list.getAttribute("role") !== "listbox" ||
+            !list.getClientRects().length
+          )
+            throw new Error("原下拉控件或受控弹层已失效");
+          if (document.activeElement === control) return selector;
+          if (list.contains(document.activeElement)) return listSelector;
+          throw new Error("键盘焦点不属于原下拉控件或受控弹层");
+        },
+        selector,
+        listId,
+      );
+    await beforeInput?.();
+    const owner = await focusOwner();
+    await this.assertCaseKeyboardFocus(owner, true);
+    await beforeInput?.();
+    if ((await focusOwner()) !== owner) throw new Error("关闭前候选弹层焦点已变化");
+    this.signal.throwIfAborted();
+    await this.page.keyboard.press("Escape");
   }
 
   /** Diagnostic-only observations: no field values, document text or focus-changing actions. */

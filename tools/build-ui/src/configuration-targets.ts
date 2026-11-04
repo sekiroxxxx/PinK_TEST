@@ -3,6 +3,7 @@ import { configurationFamilies } from "./configuration-operations.js";
 import type { ParameterSchema } from "./step-parameter-contract.js";
 
 export type ConfigurationScalar = string | number | boolean;
+export type ConfigurationScalarKind = "string" | "number" | "boolean";
 export type FieldLocator =
   | { kind: "option-key"; key: string }
   | { kind: "label"; name: string }
@@ -13,7 +14,8 @@ export interface FieldScope {
   readyKeys: string[];
 }
 export interface StandardFieldTarget {
-  kind: "string" | "number" | "boolean";
+  kind: ConfigurationScalarKind | "scalar";
+  valueKinds?: ConfigurationScalarKind[];
   control: "text" | "number" | "boolean" | "enum";
   locator?: FieldLocator;
   scope?: FieldScope;
@@ -30,6 +32,57 @@ export interface ConfigurationTarget {
 }
 
 const textSchema: ParameterSchema = { type: "string", minLength: 1 };
+const standardFieldSchema: ParameterSchema = {
+  type: "object",
+  additionalProperties: false,
+  required: ["kind", "control"],
+  properties: {
+    kind: { enum: ["string", "number", "boolean", "scalar"] },
+    valueKinds: {
+      type: "array",
+      minItems: 2,
+      uniqueItems: true,
+      items: { enum: ["string", "number", "boolean"] },
+    },
+    control: { enum: ["text", "number", "boolean", "enum"] },
+    locator: {
+      oneOf: [
+        {
+          type: "object",
+          required: ["kind", "key"],
+          additionalProperties: false,
+          properties: { kind: { const: "option-key" }, key: textSchema },
+        },
+        {
+          type: "object",
+          required: ["kind", "name"],
+          additionalProperties: false,
+          properties: { kind: { const: "label" }, name: textSchema },
+        },
+        {
+          type: "object",
+          required: ["kind", "role", "name"],
+          additionalProperties: false,
+          properties: {
+            kind: { const: "role" },
+            role: { enum: ["textbox", "spinbutton", "checkbox", "combobox"] },
+            name: textSchema,
+          },
+        },
+      ],
+    },
+    scope: {
+      type: "object",
+      required: ["readyKeys"],
+      additionalProperties: false,
+      properties: {
+        section: textSchema,
+        readyKeys: { type: "array", minItems: 1, uniqueItems: true, items: textSchema },
+      },
+    },
+  },
+};
+const { valueKinds: mixedValueKinds, ...singleFieldProperties } = standardFieldSchema.properties!;
 export const configurationTargetSchema: ParameterSchema = {
   type: "object",
   additionalProperties: false,
@@ -50,48 +103,25 @@ export const configurationTargetSchema: ParameterSchema = {
     fields: {
       type: "object",
       additionalProperties: {
-        type: "object",
-        additionalProperties: false,
-        required: ["kind", "control"],
-        properties: {
-          kind: { enum: ["string", "number", "boolean"] },
-          control: { enum: ["text", "number", "boolean", "enum"] },
-          locator: {
-            oneOf: [
-              {
-                type: "object",
-                required: ["kind", "key"],
-                additionalProperties: false,
-                properties: { kind: { const: "option-key" }, key: textSchema },
-              },
-              {
-                type: "object",
-                required: ["kind", "name"],
-                additionalProperties: false,
-                properties: { kind: { const: "label" }, name: textSchema },
-              },
-              {
-                type: "object",
-                required: ["kind", "role", "name"],
-                additionalProperties: false,
-                properties: {
-                  kind: { const: "role" },
-                  role: { enum: ["textbox", "spinbutton", "checkbox", "combobox"] },
-                  name: textSchema,
-                },
-              },
-            ],
-          },
-          scope: {
-            type: "object",
-            required: ["readyKeys"],
-            additionalProperties: false,
+        oneOf: [
+          {
+            ...standardFieldSchema,
             properties: {
-              section: textSchema,
-              readyKeys: { type: "array", minItems: 1, uniqueItems: true, items: textSchema },
+              ...singleFieldProperties,
+              kind: { enum: ["string", "number", "boolean"] },
             },
           },
-        },
+          {
+            ...standardFieldSchema,
+            required: ["kind", "control", "valueKinds"],
+            properties: {
+              ...singleFieldProperties,
+              kind: { const: "scalar" },
+              control: { const: "enum" },
+              valueKinds: mixedValueKinds,
+            },
+          },
+        ],
       },
     },
     families: {
@@ -173,9 +203,18 @@ export function validateConfigurationTargets(value: unknown): ConfigurationTarge
         !type ||
         typeof type !== "object" ||
         Array.isArray(type) ||
-        Object.keys(type).some((k) => !["kind", "control", "locator", "scope"].includes(k)) ||
-        !["string", "number", "boolean"].includes(type.kind) ||
+        Object.keys(type).some(
+          (k) => !["kind", "valueKinds", "control", "locator", "scope"].includes(k),
+        ) ||
+        !["string", "number", "boolean", "scalar"].includes(type.kind) ||
         !["text", "number", "boolean", "enum"].includes(type.control) ||
+        (type.kind === "scalar"
+          ? type.control !== "enum" ||
+            !Array.isArray(type.valueKinds) ||
+            type.valueKinds.length < 2 ||
+            new Set(type.valueKinds).size !== type.valueKinds.length ||
+            type.valueKinds.some((kind) => !["string", "number", "boolean"].includes(kind))
+          : type.valueKinds !== undefined) ||
         (type.control === "enum"
           ? false
           : type.control === "boolean"
@@ -186,7 +225,15 @@ export function validateConfigurationTargets(value: unknown): ConfigurationTarge
       )
         throw new Error("新字段仅支持标准文本、数值、布尔或带类型的枚举控件");
       const registered = supportedFieldTypes[key];
-      if (registered && (registered.kind !== type.kind || registered.sensitive))
+      if (
+        registered &&
+        (registered.sensitive ||
+          (registered.kind !== type.kind &&
+            !(
+              type.kind === "scalar" &&
+              type.valueKinds!.includes(registered.kind as ConfigurationScalarKind)
+            )))
+      )
         throw new Error("标准描述不能覆盖已有字段的类型或敏感性");
       if (type.locator !== undefined) {
         const locator = type.locator;
@@ -245,8 +292,12 @@ export function validateConfigurationTargets(value: unknown): ConfigurationTarge
           !known(family.parent) ||
           parents.has(family.parent) ||
           !["string", "number", "boolean"].includes(typeof family.enabled) ||
-          typeof family.enabled !==
-            (target.fields[family.parent]?.kind ?? supportedFieldTypes[family.parent]?.kind) ||
+          !(target.fields[family.parent]?.kind === "scalar"
+            ? target.fields[family.parent].valueKinds!.includes(
+                typeof family.enabled as ConfigurationScalarKind,
+              )
+            : typeof family.enabled ===
+              (target.fields[family.parent]?.kind ?? supportedFieldTypes[family.parent]?.kind)) ||
           !Array.isArray(family.children) ||
           !family.children.length ||
           family.children.some(

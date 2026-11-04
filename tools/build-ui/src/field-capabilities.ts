@@ -52,9 +52,7 @@ export function assertSupportedValues(
 ): void {
   const declared = Object.assign({}, ...targets.map((target) => target.fields));
   for (const [key, value] of Object.entries(values)) {
-    const capability = Object.hasOwn(supportedFieldTypes, key)
-      ? supportedFieldTypes[key]
-      : declared[key];
+    const capability = declared[key] ?? supportedFieldTypes[key];
     if (!capability) throw new Error(`${path}.${key}：执行器没有该字段的操作能力`);
     caseContract.validateValue(key, value, { ...capability, choices: undefined }, `${path}.${key}`);
   }
@@ -72,11 +70,15 @@ export function validateExecutableCatalog(value: unknown): CatalogDocument {
   )
     throw new Error("executionOrder 须为不重复的用例 ID 数组");
   for (const [key, type] of Object.entries(doc.fieldTypes)) {
-    const capability = Object.hasOwn(supportedFieldTypes, key)
-      ? supportedFieldTypes[key]
-      : declared[key];
+    const capability = declared[key] ?? supportedFieldTypes[key];
     if (!capability) throw new Error(`fieldTypes.${key}：执行器未注册该字段，不能由用例自授能力`);
-    if (type.kind !== capability.kind || (capability.sensitive && !type.sensitive))
+    if (
+      type.kind !== capability.kind ||
+      (capability.sensitive && !type.sensitive) ||
+      (type.kind === "scalar" &&
+        JSON.stringify([...(type.valueKinds ?? [])].sort()) !==
+          JSON.stringify([...(capability.valueKinds ?? [])].sort()))
+    )
       throw new Error(`fieldTypes.${key}：字段类型或敏感性与执行器能力不符`);
   }
   for (const t of doc.templates) assertSupportedValues(t.values, `templates.${t.id}`, targets);

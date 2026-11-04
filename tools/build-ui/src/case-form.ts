@@ -21,6 +21,7 @@ import { StandardFields, type CandidateMatch } from "./standard-fields.js";
 import { configurationFamilies } from "./configuration-operations.js";
 import { supportedFieldTypes } from "./supported-field-types.js";
 import type { StandardFieldTarget } from "./configuration-targets.js";
+import type { BuildStep } from "./build-steps-contract.js";
 
 export interface CaseControl {
   value: CaseValue;
@@ -51,6 +52,120 @@ export class CaseForm {
 
   private standard() {
     return new StandardFields(this.builder, this.signal, this.beforeInput);
+  }
+
+  /** Inspect adapters before writes; condition-dependent controls are checked when enabled. */
+  async checkCapabilities(steps: readonly BuildStep[]) {
+    const checks: Array<{ field: string; state: string; control?: string }> = [];
+    const checked = new Set<string>();
+    for (const [index, step] of steps.entries()) {
+      if (step.op !== "set" && step.op !== "config.select") continue;
+      const field = step.field;
+      if (checked.has(field)) continue;
+      checked.add(field);
+      const prior = steps.slice(0, index);
+      const dependent = this.fieldFamilies([field]).some(
+        (family) =>
+          family.children.includes(field) &&
+          prior.some(
+            (s) => (s.op === "set" || s.op === "config.prepare") && s.field === family.parent,
+          ),
+      );
+      const prepared = prior.some(
+        (s) => s.op === "config.expand" || (s.op === "config.prepare" && s.field === field),
+      );
+      let control: CaseControl | null;
+      try {
+        control = await this.inspect(field);
+      } catch (cause) {
+        if (cause instanceof Error && /^用例字段不唯一：/.test(cause.message))
+          throw new ConfigurationOperationError("context", `配置控件不唯一：${field}`, "stop", {
+            cause,
+          });
+        if (!(cause instanceof ConfigurationOperationError) || cause.disposition !== "blocked")
+          throw cause;
+        throw new ConfigurationOperationError(
+          "precondition",
+          `执行能力不足：不能读取配置控件 ${field}`,
+          "blocked",
+          {
+            cause,
+            diagnostic: {
+              phase: "runtime-capability",
+              observations: { kind: "execution-support", field },
+            },
+          },
+        );
+      }
+      if (!control) {
+        if (
+          dependent ||
+          prepared ||
+          prior.some((s) => s.op === "set" || s.op === "config.select")
+        ) {
+          // Ordered writes may change the schema. Do not claim a hidden control is supported;
+          // its existing adapter must still identify it before the later write can occur.
+          checks.push({ field, state: "deferred-until-enabled" });
+          continue;
+        }
+        throw new ConfigurationOperationError(
+          "precondition",
+          `执行能力不足：当前配置页没有可识别的控件 ${field}`,
+          "blocked",
+          {
+            diagnostic: {
+              phase: "runtime-capability",
+              observations: { kind: "execution-support", field, reason: "missing-control" },
+            },
+          },
+        );
+      }
+      const type = this.target?.fields[field] ?? supportedFieldTypes[field];
+      const scalarKinds = type?.kind === "scalar" ? type.valueKinds : type ? [type.kind] : [];
+      const compatible =
+        (control.kind === "boolean" && scalarKinds?.includes("boolean")) ||
+        (control.kind === "number" && scalarKinds?.includes("number")) ||
+        (control.kind === "string" && scalarKinds?.includes("string")) ||
+        ["enum", "select", "array", "map"].includes(control.kind);
+      if (!compatible)
+        throw new ConfigurationOperationError(
+          "precondition",
+          `执行能力不足：配置控件类型不匹配 ${field}`,
+          "blocked",
+          {
+            diagnostic: {
+              phase: "runtime-capability",
+              observations: { kind: "execution-support", field, control: control.kind },
+            },
+          },
+        );
+      checks.push({
+        field,
+        state: control.disabled ? "present-disabled" : "supported",
+        control: control.kind,
+      });
+    }
+    if (steps.some((step) => step.op === "build.submit")) {
+      // Use the existing stage adapter: a linked build/run group still has one build stage.
+      const build = (await this.readStages()).buttons.filter((button) => button.stage === "build");
+      if (build.length !== 1)
+        throw new ConfigurationOperationError(
+          "precondition",
+          "执行能力不足：配置页没有唯一的构建按钮",
+          "blocked",
+          {
+            diagnostic: {
+              phase: "runtime-capability",
+              observations: {
+                kind: "execution-support",
+                operation: "build.submit",
+                matches: build.length,
+              },
+            },
+          },
+        );
+    }
+    return { kind: "runtime-capabilities", checks };
   }
   private description(key: string): StandardFieldTarget {
     const declared = this.target?.fields[key];
@@ -421,7 +536,7 @@ export class CaseForm {
     await this.builder.expandSection(label, this.beforeInput);
   }
   async openpaasPage() {
-    return this.builder.openpaasPage();
+    return this.builder.openpaasPage(this.beforeInput);
   }
   async selectOpenpaasGame(id: string) {
     await this.builder.selectOpenpaasGame(id, this.beforeInput);
@@ -704,7 +819,27 @@ export class CaseForm {
       async () => (await this.inspect(key)) ?? undefined,
       30_000,
       this.signal,
-    );
+    ).catch((cause) => {
+      if (this.signal.aborted) throw cause;
+      if (!(cause instanceof Error) || cause.message !== `等待超时：用例字段就绪：${key}`)
+        throw cause;
+      throw new ConfigurationOperationError(
+        "precondition",
+        `执行能力或页面条件不足：字段 ${key} 未就绪或不可识别`,
+        "blocked",
+        {
+          cause,
+          diagnostic: {
+            phase: "runtime-capability",
+            observations: {
+              kind: "execution-support",
+              field: key,
+              reason: "missing-or-hidden-control",
+            },
+          },
+        },
+      );
+    });
   }
 
   async set(key: string, target: CaseValue, input?: string, enumLabel?: string): Promise<boolean> {

@@ -127,8 +127,24 @@ export function validateBuildSteps(
     if (!value || typeof value !== "object" || Array.isArray(value)) error(at, "必须是对象");
     return value as Record<string, unknown>;
   };
-  const keys = (o: Record<string, unknown>, allowed: string[], at: string) => {
-    if (Object.keys(o).some((k) => !allowed.includes(k))) error(at, "含未支持的属性");
+  const property = (at: string, key: string) =>
+    /^[A-Za-z_][\w-]*$/.test(key) ? `${at}.${key}` : `${at}[${JSON.stringify(key)}]`;
+  const keys = (
+    o: Record<string, unknown>,
+    allowed: string[],
+    at: string,
+    required: string[] = [],
+  ) => {
+    const missing = required.filter((key) => !Object.hasOwn(o, key));
+    const extra = Object.keys(o).filter((key) => !allowed.includes(key));
+    if (missing.length || extra.length)
+      error(
+        property(at, missing[0] ?? extra[0]),
+        [
+          ...(missing.length ? [`缺少必填属性：${missing.join("、")}`] : []),
+          ...(extra.length ? [`含未支持的属性：${extra.join("、")}`] : []),
+        ].join("；"),
+      );
   };
   const id = (v: unknown, at: string): string => {
     if (typeof v !== "string" || !/^[a-zA-Z0-9][\w.-]*$/.test(v)) error(at, "需要有效标识符");
@@ -222,23 +238,35 @@ export function validateBuildSteps(
       continue;
     }
     id(c.platform, `${at}.platform`);
-    if (!(c.finally as unknown[]).some((step) => obj(step, at).op === "config.close"))
+    const probeOnly = (c.steps as unknown[]).every((step) => {
+      const s = obj(step, at);
+      return s.op === "platform.probe" || (s.op === "assert" && s.check === "probe");
+    });
+    const noPageCleanup = probeOnly && (c.finally as unknown[]).length === 0;
+    if (
+      !noPageCleanup &&
+      !(c.finally as unknown[]).some((step) => obj(step, at).op === "config.close")
+    )
       error(at, "finally 必须声明关闭操作，失败时也要收尾");
-    if (obj((c.finally as unknown[])[0], at).op !== "config.open")
+    if (!noPageCleanup && obj((c.finally as unknown[])[0], at).op !== "config.open")
       error(at, "finally 须先绑定清理页面，不能依赖可能未执行的页面步骤");
     const recordsConfiguration = (c.steps as unknown[]).some((s) => obj(s, at).op === "record");
     const target = targets.find((t) => t.id === c.platform);
     const observations = new Map<string, { page?: string; revision: number; kind: string }>();
     const candidate = (raw: unknown, where: string) => {
       const value = obj(raw, where);
-      keys(value, value.by === "value" ? ["by", "value"] : ["by", "label"], where);
+      if (!Object.hasOwn(value, "by")) error(property(where, "by"), "缺少必填属性：by");
+      if (value.by !== "value" && value.by !== "label")
+        error(property(where, "by"), "候选匹配方式须为 value 或 label");
+      const branch = value.by === "value" ? "value" : "label";
+      keys(value, ["by", branch], where, ["by", branch]);
       if (
-        value.by === "value"
+        branch === "value"
           ? !["string", "number", "boolean"].includes(typeof value.value) ||
             (typeof value.value === "number" && !Number.isFinite(value.value))
-          : value.by !== "label" || typeof value.label !== "string" || !value.label.trim()
+          : typeof value.label !== "string" || !value.label.trim()
       )
-        error(where, "候选须按有类型值或精确标签匹配");
+        error(property(where, branch), "候选须按有类型值或精确标签匹配");
     };
     let active: string | undefined,
       record: string | undefined,
@@ -344,9 +372,13 @@ export function validateBuildSteps(
             });
             break;
           case "config.select":
-            keys(s, ["id", "op", "page", "field", "candidate"], where);
+            keys(s, ["id", "op", "page", "field", "candidate"], where, [
+              "page",
+              "field",
+              "candidate",
+            ]);
             usePage(s.page, where);
-            candidate(s.candidate, where);
+            candidate(s.candidate, `${where}.candidate`);
             mutate([String(s.field)], where);
             if (obj(s.candidate, where).by === "value")
               validateInput(String(s.field), obj(s.candidate, where).value, stepId);
@@ -619,7 +651,11 @@ export function validateBuildSteps(
             projected.push({ id: stepId, op: "read", fields: s.fields });
             break;
           case "assert":
-            if (!Object.hasOwn(stepAssertions, String(s.check))) error(where, "未支持的断言");
+            if (!Object.hasOwn(stepAssertions, String(s.check)))
+              error(
+                `${where}.check`,
+                Object.hasOwn(s, "check") ? "未支持的断言" : "缺少必填属性：check",
+              );
             if (s.check === "probe" || s.check === "candidate") {
               keys(
                 s,
@@ -627,6 +663,9 @@ export function validateBuildSteps(
                   ? ["id", "op", "check", "observation", "expected"]
                   : ["id", "op", "check", "observation", "candidate", "expected"],
                 where,
+                s.check === "probe"
+                  ? ["observation", "expected"]
+                  : ["observation", "candidate", "expected"],
               );
               const observed = observations.get(String(s.observation));
               if (
@@ -636,31 +675,41 @@ export function validateBuildSteps(
                 observed.kind !== s.check
               )
                 error(where, "须引用同一上下文中未过期的目标或候选观察");
-              const expected = obj(s.expected, where);
+              const expectedAt = `${where}.expected`;
+              const expected = obj(s.expected, expectedAt);
               if (s.check === "probe") {
-                keys(expected, ["presence", "visible", "readable", "writable", "control"], where);
+                keys(
+                  expected,
+                  ["presence", "visible", "readable", "writable", "control"],
+                  expectedAt,
+                );
+                if (!Object.keys(expected).length)
+                  error(expectedAt, "目标断言需要明确的存在性、状态或控件类型");
                 if (
-                  !Object.keys(expected).length ||
-                  (expected.presence !== undefined &&
-                    !["present", "absent"].includes(String(expected.presence))) ||
-                  ["visible", "readable", "writable"].some(
-                    (k) => expected[k] !== undefined && typeof expected[k] !== "boolean",
-                  ) ||
-                  (expected.control !== undefined &&
-                    !["text", "number", "boolean", "enum", "platform-card"].includes(
-                      String(expected.control),
-                    ))
+                  expected.presence !== undefined &&
+                  !["present", "absent"].includes(String(expected.presence))
                 )
-                  error(where, "目标断言需要明确的存在性、状态或控件类型");
+                  error(`${expectedAt}.presence`, "目标存在性须为 present 或 absent");
+                for (const key of ["visible", "readable", "writable"])
+                  if (expected[key] !== undefined && typeof expected[key] !== "boolean")
+                    error(property(expectedAt, key), "目标状态须为布尔值");
+                if (
+                  expected.control !== undefined &&
+                  !["text", "number", "boolean", "enum", "platform-card"].includes(
+                    String(expected.control),
+                  )
+                )
+                  error(`${expectedAt}.control`, "未支持的控件类型");
               } else {
-                keys(expected, ["present", "disabled"], where);
-                candidate(s.candidate, where);
+                candidate(s.candidate, `${where}.candidate`);
+                keys(expected, ["present", "disabled"], expectedAt, ["present"]);
+                if (typeof expected.present !== "boolean")
+                  error(`${expectedAt}.present`, "候选预期 present 须为布尔值");
                 if (
-                  typeof expected.present !== "boolean" ||
-                  (expected.disabled !== undefined &&
-                    (typeof expected.disabled !== "boolean" || !expected.present))
+                  expected.disabled !== undefined &&
+                  (typeof expected.disabled !== "boolean" || !expected.present)
                 )
-                  error(where, "候选预期需要 present；禁用状态仅用于存在的候选");
+                  error(`${expectedAt}.disabled`, "禁用状态须为布尔值且仅用于存在的候选");
               }
               break;
             }

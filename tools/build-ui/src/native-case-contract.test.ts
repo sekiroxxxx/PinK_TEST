@@ -20,6 +20,7 @@ import {
   verifyConfigurationStepsPlan,
 } from "./configuration-steps-startup.js";
 import { supportedFieldTypes } from "./supported-field-types.js";
+import { validateConfigurationTargets, type ConfigurationTarget } from "./configuration-targets.js";
 import type { CatalogDocument } from "./case-contract.js";
 import { ExecutionContext } from "./configuration-context.js";
 import { ConfigurationOperations, type ConfigurationPort } from "./configuration-operations.js";
@@ -267,4 +268,72 @@ test("runtime candidate validation does not mutate or reuse the fixed candidate 
   const printed = JSON.parse((await exec(process.execPath, [cli, "--describe"])).stdout);
   assert.equal(printed.planNoBuildField, "steps.execution.willSubmit");
   assert.equal(resolve(loaded.path), file);
+});
+
+test("explicit mixed enum descriptors preserve typed inputs through loading and keep ordinary control restrictions", async (t) => {
+  const f = await fixture(t);
+  const target: ConfigurationTarget = {
+    id: "web-desktop",
+    label: "Web 桌面端",
+    configurationTitle: "Web 桌面端",
+    category: "X-Device",
+    fields: {
+      sourceMaps: {
+        kind: "scalar",
+        control: "enum",
+        valueKinds: ["boolean", "string"],
+        locator: { kind: "option-key", key: "sourceMaps" },
+        scope: { readyKeys: ["name", "buildPath"] },
+      },
+    },
+  };
+  for (const value of [false, true, "inline"]) {
+    const document = configurationCheckDocument({
+      caseId: "qa.mixed",
+      platform: target.id,
+      targets: [target],
+      values: { sourceMaps: value },
+    });
+    const file = join(f.root, "mixed.json");
+    await writeFile(file, serializeNativeDocument(document));
+    const loaded = await loadNativeCases(file, { project: f.root });
+    assert.deepEqual(loaded.inputs!.preview.cases[0].blockers, []);
+    assert.equal(configurationStepsPlan(loaded).execution.willSubmit, false);
+    assert.deepEqual(loaded.document.targets, [target]);
+    const set = loaded.document.cases[0].steps.find((s) => s.op === "set");
+    assert.ok(set?.op === "set");
+    assert.equal(set.value, value);
+  }
+  assert.throws(
+    () =>
+      configurationCheckDocument({
+        caseId: "qa.bad-type",
+        platform: target.id,
+        targets: [target],
+        values: { sourceMaps: 0 },
+      }),
+    /boolean\/string/,
+  );
+  for (const field of [
+    { kind: "scalar", control: "text", valueKinds: ["boolean", "string"] },
+    { kind: "scalar", control: "enum", valueKinds: ["string"] },
+    { kind: "scalar", control: "enum", valueKinds: ["string", "string"] },
+    { kind: "string", control: "enum", valueKinds: ["string", "boolean"] },
+  ])
+    assert.throws(
+      () => validateConfigurationTargets([{ ...target, fields: { sourceMaps: field } }]),
+      /标准文本/,
+    );
+  assert.throws(
+    () =>
+      validateConfigurationTargets([
+        { ...target, fields: { "packages.android.mode": target.fields.sourceMaps } },
+      ]),
+    /其他平台/,
+  );
+  assert.throws(
+    () =>
+      validateConfigurationTargets([{ ...target, fields: { token: target.fields.sourceMaps } }]),
+    /敏感/,
+  );
 });

@@ -71,6 +71,10 @@ export interface ConfigurationStepsEnvironment {
   session: ExecutionContext;
   /** Supplies an already verified UI adapter; no startup or build API is part of this executor. */
   openConfiguration(platform: string): Promise<ConfigurationOperations>;
+  checkCapabilities?(
+    operations: ConfigurationOperations,
+    steps: readonly BuildStep[],
+  ): Promise<unknown>;
   evidenceKind: "offline-fixture" | "runtime";
   probePlatform?(platform: string): Promise<TargetObservation>;
   builderUi?: BuilderUiPort;

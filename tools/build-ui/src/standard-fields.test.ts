@@ -177,6 +177,7 @@ function domFixture() {
   add("packages.qa-standard-platform.mode", "新模式", mode);
   let loading = false;
   const doc = {
+    activeElement: null as ElementFixture | null,
     defaultView: {
       getComputedStyle: (element: ElementFixture) => ({
         visibility: "visible",
@@ -257,6 +258,97 @@ function domFixture() {
   };
 }
 const scope = { readyKeys: ["name", "buildPath"] };
+test("OpenPaaS prerequisite checks preserve lost-page stops and classify an empty observed game list as blocked", async () => {
+  let reads = 0;
+  const observer = {
+    signal: new AbortController().signal,
+    configurationTimeoutMs: 1000,
+    cdp: {
+      dom: async () =>
+        ++reads % 2
+          ? { id: "", disabled: false, ids: [], createLabel: "创建游戏", codeVersion: "" }
+          : [],
+    },
+  } as unknown as Builder;
+  const lost = new ConfigurationOperationError("context", "配置页已失效", "stop");
+  await assert.rejects(
+    Builder.prototype.openpaasPage.call(observer, async () => {
+      throw lost;
+    }),
+    (error: unknown) => error === lost,
+  );
+  assert.equal(reads, 0);
+  await assert.rejects(
+    Builder.prototype.openpaasPage.call(observer, async () => {}),
+    (error: unknown) =>
+      error instanceof ConfigurationOperationError &&
+      error.disposition === "blocked" &&
+      error.diagnostic?.phase === "platform-prerequisite",
+  );
+  assert.equal(reads, 2);
+  Object.assign(observer, { configurationTimeoutMs: 1, cdp: { dom: async () => undefined } });
+  await assert.rejects(
+    Builder.prototype.openpaasPage.call(observer, async () => {}),
+    (error: unknown) =>
+      error instanceof ConfigurationOperationError &&
+      error.disposition === "blocked" &&
+      error.diagnostic?.phase === "runtime-capability",
+  );
+});
+test("runtime capability checks inspect standard targets without writes and defer declared conditional children", async () => {
+  const f = domFixture();
+  const target = {
+    id: "qa-standard-platform",
+    label: "QA 平台",
+    configurationTitle: "QA 平台",
+    category: "X-Device" as const,
+    fields: {
+      name: { kind: "string" as const, control: "text" as const, scope },
+      "new-switch": { kind: "boolean" as const, control: "boolean" as const, scope },
+      "new-child": { kind: "string" as const, control: "text" as const, scope },
+    },
+    families: [{ parent: "new-switch", enabled: true, children: ["new-child"] }],
+  };
+  const form = new CaseForm(
+    f.builder,
+    target.id,
+    new AbortController().signal,
+    undefined,
+    undefined,
+    target,
+  );
+  const result = await form.checkCapabilities([
+    { id: "name", op: "set", page: "page", field: "name", value: "QA" },
+    { id: "enable", op: "set", page: "page", field: "new-switch", value: true },
+    { id: "child", op: "set", page: "page", field: "new-child", value: "QA" },
+  ]);
+  assert.deepEqual(
+    result.checks.map(({ field, state }) => ({ field, state })),
+    [
+      { field: "name", state: "supported" },
+      { field: "new-switch", state: "supported" },
+      { field: "new-child", state: "deferred-until-enabled" },
+    ],
+  );
+  await assert.rejects(
+    form.checkCapabilities([
+      { id: "child", op: "set", page: "page", field: "new-child", value: "QA" },
+    ]),
+    (error: unknown) =>
+      error instanceof ConfigurationOperationError &&
+      error.disposition === "blocked" &&
+      error.diagnostic?.phase === "runtime-capability",
+  );
+  assert.deepEqual(f.inputs, []);
+  const transport = new Error("Builder 调试连接已断开");
+  f.builder.caseDom = async () => {
+    throw transport;
+  };
+  await assert.rejects(
+    form.checkCapabilities([{ id: "name", op: "set", page: "page", field: "name", value: "QA" }]),
+    (error: unknown) => error === transport,
+  );
+});
 const absent: StandardFieldTarget = {
   kind: "string",
   control: "text",
@@ -471,9 +563,10 @@ test("standard enum binds Base UI text proxy to its trigger and preserves typed 
   proxy.type = "text";
   proxy.value = "false";
   proxy.computedStyle.clipPath = "inset(50%)";
-  const list = f.root.add(new ElementFixture("DIV", { id: "choices" }));
+  const list = f.root.add(new ElementFixture("DIV", { id: "choices", role: "listbox" }));
   list.hidden = true;
   const values = [false, true, "inline"];
+  let dismissal: "normal" | "foreign-focus" | "stays-open" = "normal";
   for (const [index, value] of values.entries())
     list.add(
       new ElementFixture(
@@ -486,8 +579,11 @@ test("standard enum binds Base UI text proxy to its trigger and preserves typed 
     await verify?.();
     const selected = f.doc.querySelector(selector) as unknown as ElementFixture;
     if (selected === control) {
+      if (!list.hidden) throw new Error("展开列表遮住触发按钮，不能点击清理");
       list.hidden = !list.hidden;
       control.attrs["aria-expanded"] = String(!list.hidden);
+      (f.doc as unknown as { activeElement: ElementFixture }).activeElement =
+        dismissal === "foreign-focus" ? f.root : list.children[0];
     } else {
       assert.ok(list.children.includes(selected));
       control.attrs["data-pink-enum-value"] = selected.attrs["data-pink-enum-value"];
@@ -497,8 +593,32 @@ test("standard enum binds Base UI text proxy to its trigger and preserves typed 
     }
     return Date.now();
   };
+  const keys: string[] = [];
+  Object.setPrototypeOf(f.builder, Builder.prototype);
+  Object.assign(f.builder, {
+    cdp: { dom: f.builder.caseDom },
+    hostName: "fixture",
+    signal: new AbortController().signal,
+    page: {
+      evaluate: async () => true,
+      keyboard: {
+        press: async (key: string) => {
+          keys.push(key);
+          assert.equal(key, "Escape");
+          if (dismissal === "stays-open") return;
+          // External UI event: dismissal completes asynchronously and does not select a value.
+          queueMicrotask(() => {
+            list.hidden = true;
+            control.attrs["aria-expanded"] = "false";
+            (f.doc as unknown as { activeElement: ElementFixture }).activeElement = control;
+          });
+        },
+      },
+    },
+  });
   const target: StandardFieldTarget = {
-    kind: "boolean",
+    kind: "scalar",
+    valueKinds: ["boolean", "string"],
     control: "enum",
     locator: { kind: "option-key", key: "sourceMaps" },
     scope,
@@ -509,14 +629,53 @@ test("standard enum binds Base UI text proxy to its trigger and preserves typed 
     (await fields.candidates("qaSourceMap", target)).items.map((item) => item.value),
     [false, true, "inline"],
   );
+  assert.deepEqual(keys, ["Escape"]);
+  assert.equal(list.hidden, true);
+  assert.equal((await fields.inspect("qaSourceMap", target))!.value, false);
   await fields.select("qaSourceMap", target, { by: "value", value: true });
   assert.equal((await fields.inspect("qaSourceMap", target))!.value, true);
   await fields.select("qaSourceMap", target, { by: "value", value: false });
   assert.equal((await fields.inspect("qaSourceMap", target))!.value, false);
+  const form = new CaseForm(
+    f.builder,
+    "web-desktop",
+    new AbortController().signal,
+    undefined,
+    undefined,
+    {
+      id: "web-desktop",
+      label: "Web 桌面端",
+      configurationTitle: "Web 桌面端",
+      category: "X-Device",
+      fields: { sourceMaps: target },
+    },
+  );
+  const original = await form.read("sourceMaps");
+  await fields.select("qaSourceMap", target, { by: "value", value: "inline" });
+  assert.equal((await fields.inspect("qaSourceMap", target))!.value, "inline");
+  await form.restoreControl("sourceMaps", original);
+  assert.equal((await form.read("sourceMaps")).value, false);
   await assert.rejects(
-    fields.candidates("qaSourceMap", { ...target, kind: "string" }),
+    fields.candidates("qaSourceMap", { ...target, kind: "string", valueKinds: undefined }),
     /expected=string, actual=boolean/,
   );
+  const safeStop = (error: unknown) =>
+    error instanceof ConfigurationOperationError &&
+    error.disposition === "stop" &&
+    error.diagnostic?.phase === "standard-enum.dismiss";
+  const before = keys.length;
+  dismissal = "foreign-focus";
+  await assert.rejects(fields.candidates("qaSourceMap", target), safeStop);
+  assert.equal(keys.length, before, "foreign focus must not receive Escape");
+  assert.equal(list.hidden, false);
+  // Reset only this offline UI fixture before the independent unresponsive-popup scenario.
+  list.hidden = true;
+  control.attrs["aria-expanded"] = "false";
+  dismissal = "stays-open";
+  await assert.rejects(fields.candidates("qaSourceMap", target), safeStop);
+  assert.equal(keys.length, before + 1, "dismissal is sent once and is never retried");
+  assert.equal((await fields.inspect("qaSourceMap", target))!.value, false);
+  assert.equal(list.hidden, false);
   const extra = row.add(new ElementFixture("INPUT"));
   extra.type = "text";
   assert.equal((await fields.probe("qaSourceMap", target)).readable, false);
@@ -578,7 +737,7 @@ test("a missing popup candidate closes only its own popup; cleanup failure prese
   const hidden = row.add(new ElementFixture("INPUT"));
   hidden.type = "hidden";
   hidden.value = "original";
-  const list = f.root.add(new ElementFixture("DIV", { id: "choices" }));
+  const list = f.root.add(new ElementFixture("DIV", { id: "choices", role: "listbox" }));
   list.hidden = true;
   list.add(
     new ElementFixture(
@@ -590,11 +749,31 @@ test("a missing popup candidate closes only its own popup; cleanup failure prese
   let failClose = false;
   f.builder.click = async (_kind, _selector, _ui, _choice, verify) => {
     await verify?.();
-    if (!list.hidden && failClose) throw new Error("fixture popup close obstructed");
+    if (!list.hidden) throw new Error("popup covers the trigger");
     list.hidden = !list.hidden;
     combo.attrs["aria-expanded"] = String(!list.hidden);
+    (f.doc as unknown as { activeElement: ElementFixture }).activeElement = list.children[0];
     return Date.now();
   };
+  const keys: string[] = [];
+  Object.setPrototypeOf(f.builder, Builder.prototype);
+  Object.assign(f.builder, {
+    cdp: { dom: f.builder.caseDom },
+    hostName: "fixture",
+    signal: new AbortController().signal,
+    page: {
+      evaluate: async () => true,
+      keyboard: {
+        press: async (key: string) => {
+          keys.push(key);
+          assert.equal(key, "Escape");
+          if (failClose) throw new Error("fixture popup close obstructed");
+          list.hidden = true;
+          combo.attrs["aria-expanded"] = "false";
+        },
+      },
+    },
+  });
   const standard = new StandardFields(f.builder, new AbortController().signal);
   const target: StandardFieldTarget = {
     kind: "string",
@@ -608,6 +787,7 @@ test("a missing popup candidate closes only its own popup; cleanup failure prese
   );
   assert.equal(list.hidden, true);
   assert.equal(hidden.value, "original");
+  assert.deepEqual(keys, ["Escape"]);
   failClose = true;
   await assert.rejects(
     standard.select("mode", target, { by: "value", value: "missing" }),
@@ -619,6 +799,7 @@ test("a missing popup candidate closes only its own popup; cleanup failure prese
       error.cause.message.includes("unavailable-candidate") &&
       JSON.stringify(error.diagnostic).includes("close obstructed"),
   );
+  assert.deepEqual(keys, ["Escape", "Escape"]);
 });
 
 test("same executor reads a new platform, new fields and a new candidate from JSON, restores after assertion failure, and stops after recovery failure", async () => {
@@ -633,8 +814,10 @@ test("same executor reads a new platform, new fields and a new candidate from JS
     restoreFails = false,
     existingPlatform = false,
     hiddenChild = false,
+    prepareUi?: (f: ReturnType<typeof domFixture>) => void,
   ) {
     const f = domFixture();
+    prepareUi?.(f);
     if (hiddenChild) f.rows[3].hidden = true;
     const identity = { executable: "offline", project: "offline", windowId: 1 };
     if (existingPlatform) f.rows[3].attrs["data-option-key"] = "packages.web-desktop.mode";
@@ -720,6 +903,51 @@ test("same executor reads a new platform, new fields and a new candidate from JS
   const builtinResult = await run(builtinDocument, false, true);
   assert.equal(builtinResult.result.outcome, "passed");
   assert.equal(builtinResult.f.mode.value, "original");
+  const mixed = structuredClone(source.targets![0]);
+  mixed.fields = {
+    sourceMaps: {
+      kind: "scalar",
+      control: "enum",
+      valueKinds: ["boolean", "string"],
+      locator: source.targets![0].fields.qaMode.locator,
+      scope,
+    },
+  };
+  const mixedDocument = configurationCheckDocument({
+    caseId: "qa.typed-enum",
+    platform: mixed.id,
+    targets: [mixed],
+    values: { sourceMaps: false },
+  });
+  const typedOptions = (f: ReturnType<typeof domFixture>) => {
+    f.mode.options = [false, true, "false", "inline"].map((value, index) => {
+      const option = new ElementFixture("OPTION", {
+        "data-pink-enum-value": JSON.stringify(value),
+      });
+      option.value = String(index);
+      option.label = String(value);
+      return option;
+    });
+    f.mode.value = "1";
+  };
+  const typed = await run(mixedDocument, false, false, false, typedOptions);
+  assert.equal(typed.result.cases[0].outcome, "passed");
+  assert.equal(typed.result.cases[0].restoration, "passed");
+  assert.equal(typed.f.mode.value, "1");
+  const wrongType = structuredClone(mixedDocument);
+  const independent = wrongType.cases[0].steps.find(
+    (step) => step.op === "assert" && step.check === "values",
+  );
+  assert.ok(independent?.op === "assert" && independent.check === "values");
+  independent.values.sourceMaps = "false";
+  const rejectedType = await run(wrongType, false, false, false, typedOptions);
+  assert.equal(
+    rejectedType.result.cases[0].outcome,
+    "failed",
+    "string false must not equal boolean false",
+  );
+  assert.equal(rejectedType.result.cases[0].restoration, "passed");
+  assert.equal(rejectedType.f.mode.value, "1");
   const edited = structuredClone(source);
   const values = edited.cases[0].steps.find((s) => s.op === "assert" && s.check === "values")!;
   if (values.op === "assert" && values.check === "values")

@@ -8,6 +8,7 @@ import {
   createCaseComposition,
   mapCompositionResults,
   describeCaseComposition,
+  validateCaseComposition,
   type CaseComposition,
   type CompositionNode,
   type CompositionAction,
@@ -47,6 +48,82 @@ const loaded = (
   sourceSha256: valueHash(document),
   documentSha256: valueHash(document),
   document,
+});
+
+test("a page-free platform probe saves, assembles and runs without inventing configuration cleanup", async () => {
+  const definition: CaseComposition = {
+    kind: "pink-case-composition",
+    schemaVersion: 1,
+    sources: [],
+    fragments: [],
+    targets: [
+      {
+        id: "qa-absent",
+        label: "QA absent platform",
+        configurationTitle: "QA absent config",
+        category: "X-Device",
+        fields: {},
+        homeScope: { readyLabels: ["Web 桌面端"] },
+      },
+    ],
+    nodes: [
+      {
+        id: "absence",
+        kind: "flow",
+        target: { kind: "platform", id: "qa-absent" },
+        steps: [
+          {
+            id: "probe",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "platform.probe",
+            inputs: {},
+          },
+          {
+            id: "expected",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "assert",
+            inputs: {
+              check: "probe",
+              observation: { $output: "probe" },
+              expected: { presence: "absent" },
+            },
+          },
+        ],
+        finally: [],
+      },
+    ],
+  };
+  assert.equal((await validateCaseComposition(definition)).valid, true);
+  const assembly = await composeNativeCases(definition);
+  assert.deepEqual(assembly.diagnostics, []);
+  assert.ok(assembly.document);
+  assert.deepEqual(assembly.document.cases[0].finally, []);
+  assert.equal(configurationStepsPlan(loaded(assembly.document)).execution.willSubmit, false);
+  for (const complete of [true, false]) {
+    const identity = { executable: "offline", project: "offline", windowId: 1 };
+    const result = await runConfigurationSteps(loaded(assembly.document), {
+      session: new ExecutionContext(identity, async () => identity),
+      evidenceKind: "offline-fixture",
+      openConfiguration: async () => assert.fail("an absent platform must never be opened"),
+      probePlatform: async () => ({
+        scopeReady: true,
+        scopeComplete: complete,
+        matchCount: 0,
+        presence: complete ? "absent" : "undetermined",
+        visible: null,
+        readable: false,
+        writable: false,
+      }),
+    });
+    assert.equal(result.cases[0].outcome, complete ? "passed" : "blocked");
+    assert.ok("buildAttempted" in result);
+    assert.equal(result.buildAttempted, false);
+  }
+  const pageFlow = structuredClone(assembly.document);
+  pageFlow.cases[0].steps.unshift({ id: "open", op: "config.open" });
+  assert.throws(() => validateConfigurationSteps(pageFlow), /finally/);
 });
 function externalControls(homeFailure = false) {
   const identity = { executable: "offline.exe", project: "offline-project", windowId: 1 };
@@ -450,8 +527,213 @@ test("invalid references, unsupported actions and missing cleanup return located
   const invalid = await composeNativeCases(noRestore);
   assert.equal(invalid.document, undefined);
   assert.match(invalid.diagnostics[0].message, /恢复/);
+  assert.equal(invalid.diagnostics[0].inputPath, undefined);
   assert.deepEqual(invalid.caseIds, []);
   assert.equal((await composeNativeCases(undefined)).document, undefined);
+});
+
+test("candidate parameter diagnostics name exact nested fields without values and retain action origin", async () => {
+  const definition: CaseComposition = {
+    kind: "pink-case-composition",
+    schemaVersion: 1,
+    sources: [],
+    fragments: [],
+    nodes: [
+      {
+        id: "diagnostics",
+        kind: "flow",
+        target: { kind: "platform", id: "web-desktop" },
+        before: [
+          {
+            id: "open",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "config.open",
+            inputs: {},
+          },
+          {
+            id: "ready",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "config.ready",
+            inputs: { page: { $output: "open" } },
+          },
+          {
+            id: "candidates",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "config.candidates",
+            inputs: { page: { $output: "open" }, field: "sourceMaps" },
+          },
+        ],
+        steps: [
+          {
+            id: "check",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "assert",
+            inputs: {
+              check: "candidate",
+              observation: { $output: "candidates" },
+              candidate: { by: "value", value: "inline" },
+              expected: { present: true, disabled: false },
+            },
+          },
+        ],
+        finally: [
+          {
+            id: "cleanup",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "config.open",
+            inputs: {},
+          },
+          {
+            id: "close",
+            kind: "action",
+            moduleId: "pink-build",
+            operationId: "config.close",
+            inputs: { page: { $output: "cleanup" } },
+          },
+        ],
+      },
+    ],
+  };
+  const valid = await composeNativeCases(definition);
+  assert.deepEqual(valid.diagnostics, []);
+  assert.ok(valid.document);
+  const privateValue = "diagnostic-private-content";
+  const samples: Array<{
+    overrides: Record<string, unknown>;
+    remove?: string;
+    path: string;
+    inputPath: string[];
+    fields: string[];
+  }> = [
+    {
+      overrides: { unexpected: privateValue },
+      path: "unexpected",
+      inputPath: ["unexpected"],
+      fields: ["含未支持的属性：unexpected"],
+    },
+    {
+      overrides: { candidate: { value: privateValue } },
+      path: "candidate.by",
+      inputPath: ["candidate", "by"],
+      fields: ["缺少必填属性：by"],
+    },
+    {
+      overrides: { candidate: { by: privateValue, value: "inline" } },
+      path: "candidate.by",
+      inputPath: ["candidate", "by"],
+      fields: ["value 或 label"],
+    },
+    {
+      overrides: { candidate: { by: "value", label: privateValue } },
+      path: "candidate.value",
+      inputPath: ["candidate", "value"],
+      fields: ["缺少必填属性：value", "含未支持的属性：label"],
+    },
+    {
+      overrides: { candidate: { by: "label", value: privateValue } },
+      path: "candidate.label",
+      inputPath: ["candidate", "label"],
+      fields: ["缺少必填属性：label", "含未支持的属性：value"],
+    },
+    {
+      overrides: { expected: { present: true, extra: privateValue } },
+      path: "expected.extra",
+      inputPath: ["expected", "extra"],
+      fields: ["含未支持的属性：extra"],
+    },
+    {
+      overrides: { expected: { disabled: false } },
+      path: "expected.present",
+      inputPath: ["expected", "present"],
+      fields: ["缺少必填属性：present"],
+    },
+    {
+      overrides: { expected: { present: privateValue } },
+      path: "expected.present",
+      inputPath: ["expected", "present"],
+      fields: ["布尔值"],
+    },
+    {
+      overrides: { expected: { present: false, disabled: false } },
+      path: "expected.disabled",
+      inputPath: ["expected", "disabled"],
+      fields: ["仅用于存在的候选"],
+    },
+    {
+      overrides: {},
+      remove: "candidate",
+      path: "candidate",
+      inputPath: ["candidate"],
+      fields: ["缺少必填属性：candidate"],
+    },
+    {
+      overrides: {},
+      remove: "expected",
+      path: "expected",
+      inputPath: ["expected"],
+      fields: ["缺少必填属性：expected"],
+    },
+    {
+      overrides: { expected: { present: true, "extra.part": privateValue } },
+      path: 'expected["extra.part"]',
+      inputPath: ["expected", "extra.part"],
+      fields: ["含未支持的属性：extra.part"],
+    },
+  ];
+  for (const sample of samples) {
+    const edited = structuredClone(definition);
+    const node = edited.nodes[0] as Extract<CompositionNode, { kind: "flow" }>;
+    const action = node.steps[0] as CompositionAction;
+    Object.assign(action.inputs, sample.overrides);
+    if (sample.remove) delete action.inputs[sample.remove];
+    const validation = await validateCaseComposition(edited);
+    assert.equal(validation.valid, false);
+    const result = await composeNativeCases(edited);
+    assert.equal(result.document, undefined);
+    const error = result.diagnostics[0];
+    assert.equal(error.code, "native-contract");
+    assert.deepEqual(error.instancePath, ["diagnostics", "check"]);
+    assert.deepEqual(error.inputPath, sample.inputPath);
+    assert.ok(error.message.startsWith(`cases[0].steps[3].${sample.path}：`), error.message);
+    for (const field of sample.fields) assert.ok(error.message.includes(field), error.message);
+    assert.ok(!error.message.includes(privateValue));
+    assert.equal(validation.diagnostics[0].message, error.message);
+    assert.deepEqual(validation.diagnostics[0].inputPath, sample.inputPath);
+  }
+  const noField = await sample();
+  const check = flow(noField).steps.find(
+    (step) => step.kind === "action" && step.operationId === "assert",
+  ) as CompositionAction;
+  check.inputs.snapshot = { $output: "open" };
+  const coarse = (await composeNativeCases(noField)).diagnostics[0];
+  assert.equal(coarse.code, "native-contract");
+  assert.equal(coarse.nodeId, "expected");
+  assert.equal(
+    coarse.inputPath,
+    undefined,
+    "a dependency error without a field path must stay coarse",
+  );
+  const selection = structuredClone(valid.document);
+  selection.cases[0].steps[3] = {
+    id: "select",
+    op: "config.select",
+    page: selection.cases[0].steps[0].id,
+    field: "sourceMaps",
+    candidate: { by: "value", value: "inline" },
+  };
+  const badSelection = selection as unknown as {
+    cases: Array<{ steps: Array<{ candidate?: unknown }> }>;
+  };
+  badSelection.cases[0].steps[3].candidate = { value: privateValue };
+  assert.throws(
+    () => validateConfigurationSteps(selection),
+    /cases\[0\]\.steps\[3\]\.candidate\.by：缺少必填属性：by/,
+  );
 });
 
 test("source native v1 cases remain atomic and duplicate selections receive independent identities", async () => {
