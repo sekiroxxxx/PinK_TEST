@@ -1,9 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, writeFile, readFile, copyFile, stat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { loadConfigurationSteps } from "./configuration-steps-contract.js";
+import { getExecutorIdentity } from "./native-case-contract.js";
+import { sealPlan } from "./plan-integrity.js";
 import {
   configurationStepsLaunchPlan,
   verifyConfigurationStepsPlan,
@@ -39,6 +44,7 @@ test("launch plan binds JSON and exact installation/project before any UI connec
     await verifyConfigurationStepsPlan(file, plan);
     assert.equal(plan.runtimeVerified, false);
     assert.equal(plan.buildSubmitted, false);
+    assert.deepEqual(plan.executor, await getExecutorIdentity());
     const multiFile = join(root, "multi.json");
     await writeFile(
       multiFile,
@@ -94,6 +100,91 @@ test("launch plan binds JSON and exact installation/project before any UI connec
     await assert.rejects(verifyConfigurationStepsPlan(file, plan), /不符/);
   } finally {
     assert.equal(dirname(root), tmpdir());
+    await rm(root, { recursive: true });
+  }
+});
+
+test("cached contracts and fresh CLI reject a changed runtime dependency and require a new preview", async () => {
+  const directory = dirname(fileURLToPath(import.meta.url));
+  const root = await mkdtemp(join(directory, "executor-identity-fixture-"));
+  const exec = promisify(execFile);
+  try {
+    const identity = await getExecutorIdentity();
+    await Promise.all(
+      identity.files.map(([name]) => copyFile(join(directory, name), join(root, name))),
+    );
+    await mkdir(join(root, "resources/app"), { recursive: true });
+    await mkdir(join(root, "project"));
+    await writeFile(join(root, "PinK.exe"), "offline identity only; never launched");
+    await writeFile(join(root, "resources/app/product.json"), '{"pinkVersion":"fixture"}');
+    await writeFile(join(root, "project/package.json"), "{}");
+    const cli = join(root, "configuration-steps-cli.js");
+    const file = fileURLToPath(
+      new URL("../fixtures/configuration-steps/build-v2-basic.json", import.meta.url),
+    );
+    const results = join(root, "results");
+    const args = [
+      "--file",
+      file,
+      "--pink",
+      root,
+      "--project",
+      join(root, "project"),
+      "--results",
+      results,
+    ];
+    const preview = join(root, "preview.json");
+    await exec(process.execPath, [cli, ...args, "--preview", "--output", preview]);
+    const plan = JSON.parse(await readFile(preview, "utf8"));
+    assert.deepEqual(plan.executor, identity);
+    await exec(process.execPath, [cli, ...args, "--check-plan", "--expected-plan", preview]);
+
+    const legacyBody = { ...plan };
+    delete legacyBody.executor;
+    delete legacyBody.integrity;
+    const legacy = join(root, "legacy.json");
+    await writeFile(legacy, JSON.stringify(sealPlan(legacyBody)));
+    await assert.rejects(
+      exec(process.execPath, [cli, ...args, "--check-plan", "--expected-plan", legacy]),
+      /旧预览计划缺少执行器身份/,
+    );
+
+    await exec(process.execPath, [
+      "--input-type=module",
+      "--eval",
+      `import assert from 'node:assert/strict';
+       import { readFile, writeFile, appendFile } from 'node:fs/promises';
+       const contract = await import(${JSON.stringify(pathToFileURL(join(root, "native-case-contract.js")).href)});
+       const startup = await import(${JSON.stringify(pathToFileURL(join(root, "configuration-steps-startup.js")).href)});
+       const loaded = await contract.getExecutorIdentity();
+       const cases = await contract.loadNativeCases(${JSON.stringify(file)});
+       const preview = JSON.parse(await readFile(${JSON.stringify(preview)}, 'utf8'));
+       await writeFile(${JSON.stringify(join(root, "unexecuted.test.js"))}, '// not part of runtime');
+       await contract.verifyExecutorIdentity(loaded);
+       await assert.rejects(contract.verifyExecutorIdentity({...loaded, capabilityVersion: 'unknown'}), /执行器身份/);
+       await appendFile(${JSON.stringify(join(root, "build-task-values.js"))}, '\\n// offline dependency change\\n');
+       await assert.rejects(contract.getExecutorIdentity(), /重新加载/);
+       await assert.rejects(contract.verifyExecutorIdentity(loaded), /重新加载/);
+       await assert.rejects(startup.runConfigurationStepsFromStartup(cases, preview), /重新加载/);`,
+    ]);
+    assert.equal(
+      await readFile(cli, "utf8"),
+      await readFile(join(directory, "configuration-steps-cli.js"), "utf8"),
+    );
+    await assert.rejects(
+      exec(process.execPath, [cli, ...args, "--check-plan", "--expected-plan", preview]),
+      /执行器身份与预览计划不符/,
+    );
+    const refreshed = join(root, "refreshed.json");
+    await exec(process.execPath, [cli, ...args, "--preview", "--output", refreshed]);
+    assert.notEqual(
+      JSON.parse(await readFile(refreshed, "utf8")).executor.implementationSha256,
+      identity.implementationSha256,
+    );
+    await exec(process.execPath, [cli, ...args, "--check-plan", "--expected-plan", refreshed]);
+    await assert.rejects(stat(results), { code: "ENOENT" });
+  } finally {
+    assert.equal(dirname(root), directory);
     await rm(root, { recursive: true });
   }
 });

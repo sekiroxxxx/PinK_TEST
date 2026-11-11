@@ -226,7 +226,9 @@ export async function writeResultReport(resultPath: string): Promise<string> {
     const platform =
       text(raw.platform) ||
       text(item.platform) ||
-      (target.kind === "builder" ? `公共主页 · ${text(target.category)}` : "公共检查");
+      (target.kind === "builder"
+        ? `公共主页 · ${text(target.representativePlatform) || text(target.category)}`
+        : "公共检查");
     const tasks = list(raw.tasks).filter((task) => text(task.taskId));
     const legacyTask = record(raw.task);
     if (!tasks.length && (text(item.taskId) || text(legacyTask.id)))

@@ -25,7 +25,8 @@ export interface ConfigurationTarget {
   id: string;
   label: string;
   configurationTitle: string;
-  category: "X-Device" | "X-Application";
+  /** Optional display metadata. Routing uses the platform identity and observed cards. */
+  category?: string;
   homeScope?: { readyLabels: string[] };
   fields: Record<string, StandardFieldTarget>;
   families?: Array<{ parent: string; enabled: ConfigurationScalar; children: string[] }>;
@@ -86,12 +87,12 @@ const { valueKinds: mixedValueKinds, ...singleFieldProperties } = standardFieldS
 export const configurationTargetSchema: ParameterSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["id", "label", "configurationTitle", "category", "fields"],
+  required: ["id", "label", "configurationTitle", "fields"],
   properties: {
     id: { ...textSchema, pattern: "^[a-z][a-z0-9-]*$" },
     label: textSchema,
     configurationTitle: textSchema,
-    category: { enum: ["X-Device", "X-Application"] },
+    category: textSchema,
     homeScope: {
       type: "object",
       additionalProperties: false,
@@ -174,10 +175,11 @@ export function validateConfigurationTargets(value: unknown): ConfigurationTarge
       throw new Error("平台描述 id 无效或重复");
     ids.add(target.id);
     if (
-      !["X-Device", "X-Application"].includes(target.category) ||
+      (target.category !== undefined &&
+        (typeof target.category !== "string" || !target.category.trim())) ||
       [target.label, target.configurationTitle].some((s) => typeof s !== "string" || !s.trim())
     )
-      throw new Error("平台描述缺少分类、精确卡片名称或配置页标题");
+      throw new Error("平台描述需要精确卡片名称和配置页标题；可选分类须为非空文本");
     if (
       target.homeScope !== undefined &&
       (!target.homeScope ||

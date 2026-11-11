@@ -191,6 +191,7 @@ export async function discoverBuilderRoutes(
     activate: async (binding: DiscoveredBuilder) => {
       await session.verify();
       await activateBuilderEntry(page, binding.entry, cleanupSignal);
+      await binding.builder.waitForReady("activate", cleanupSignal);
     },
   };
 }

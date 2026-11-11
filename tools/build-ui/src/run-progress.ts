@@ -4,6 +4,7 @@ import type { ConfigurationStepCaseResult } from "./configuration-steps.js";
 import { platformCatalog } from "./platform-catalog.js";
 import { buildStepGroups } from "./build-step-scheduling.js";
 import type { BuilderTarget } from "./builder-checks.js";
+import { selectedStepCases, scheduledStepCases } from "./step-preflight.js";
 
 export const progressPrefix = "PINK_BUILD_PROGRESS ";
 export type CaseProgressStatus =
@@ -75,14 +76,19 @@ export function buildRunProgress(
   const lifecycle = data.lifecycle as RunProgress["lifecycle"];
   const runId = String(data.runId);
   const results = (data.cases ?? []) as ConfigurationStepCaseResult[];
-  const batches = buildStepGroups(loaded.document.cases);
-  const selected = loaded.catalog?.cases ?? loaded.document.cases;
+  const selected = selectedStepCases(loaded);
+  const batches = buildStepGroups(
+    loaded.document.schemaVersion === 2
+      ? scheduledStepCases(loaded.document, selected)
+      : loaded.document.cases,
+  );
   const cases = selected.map((definition): CaseProgress => {
     const result = results.find((c) => c.caseId === definition.caseId);
     const preflight = "status" in definition ? definition.status : "ready";
     const hasStarted = result?.lifecycle === "running" || !!result?.startedAt;
     let status: CaseProgressStatus;
-    if (preflight === "not-applicable") status = "not-applicable";
+    if (result?.lifecycle === "finished" && result.outcome === "stopped") status = "stopped";
+    else if (preflight === "not-applicable") status = "not-applicable";
     else if (preflight === "blocked") status = "blocked";
     else if (result?.lifecycle === "finished") status = result.outcome;
     else if (lifecycle === "finished") status = hasStarted ? "stopped" : "skipped";
@@ -223,7 +229,8 @@ export function createProgressOutput(write: (line: string) => void = console.log
             ? c.tasks.find((t) => t.state === "processing")?.progress
             : undefined;
         const targetLabel =
-          c.platformLabel ?? (c.target ? `构建公共页面 ${c.target.category}` : "公共检查");
+          c.platformLabel ??
+          (c.target ? `构建公共页面 ${c.target.representativePlatform}` : "公共检查");
         return `${targetLabel}/${c.groupLabel ?? c.title}（${stages[c.stage] ?? c.stage}${fraction === undefined ? "" : ` ${Math.round(fraction * 100)}%`}）`;
       });
     const text = `[progress] ${progress.lifecycle}/${progress.phase} 已处理 ${s.completed}/${s.total}；通过 ${s.passed}，失败 ${s.failed}，受阻 ${s.blocked}，停止 ${s.stopped}，跳过 ${s.skipped}，不适用 ${s.notApplicable}${active.length ? `；当前：${active.join("、")}` : ""}`;

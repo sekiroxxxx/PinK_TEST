@@ -162,12 +162,12 @@ export const compositionTemplates: CompositionTemplate[] = [
     description: "检查构建主页已就绪、历史记录入口可见且未禁用，结束返回主页，不点击入口。",
     parameters: [
       {
-        key: "category",
-        title: "构建分类",
+        key: "representativePlatform",
+        title: "代表平台",
         required: true,
-        schema: { enum: ["X-Device", "X-Application"] },
+        schema: { type: "string", pattern: "^[a-z][a-z0-9-]*$" },
         nodePath: ["common-home"],
-        inputPath: ["target", "category"],
+        inputPath: ["target", "representativePlatform"],
       },
     ],
     definition: {
@@ -179,7 +179,7 @@ export const compositionTemplates: CompositionTemplate[] = [
         {
           id: "common-home",
           kind: "flow",
-          target: { kind: "builder", category: "X-Device" },
+          target: { kind: "builder", representativePlatform: "web-desktop" },
           before: [
             {
               id: "open",

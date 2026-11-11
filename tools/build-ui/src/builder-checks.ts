@@ -3,11 +3,44 @@ import { ConfigurationOperationError } from "./configuration-context.js";
 
 export interface BuilderTarget {
   kind: "builder";
-  category: "X-Device" | "X-Application";
+  representativePlatform: string;
+}
+export const legacyBuilderRepresentatives: Readonly<Record<string, string>> = Object.freeze({
+  "X-Device": "web-desktop",
+  "X-Application": "wechatgame",
+});
+
+/** Legacy categories are input migration rules, never runtime navigation labels. */
+export function normalizeBuilderTarget(value: unknown): BuilderTarget {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    throw new Error("公共目标需要明确的代表平台");
+  const target = value as Record<string, unknown>;
+  if (
+    target.kind !== "builder" ||
+    Object.keys(target).some(
+      (key) => !["kind", "representativePlatform", "category"].includes(key),
+    ) ||
+    Object.hasOwn(target, "representativePlatform") === Object.hasOwn(target, "category")
+  )
+    throw new Error("公共目标须只声明 representativePlatform，或使用旧 category 兼容输入");
+  const platform = Object.hasOwn(target, "representativePlatform")
+    ? target.representativePlatform
+    : typeof target.category === "string" &&
+        Object.hasOwn(legacyBuilderRepresentatives, target.category)
+      ? legacyBuilderRepresentatives[target.category]
+      : undefined;
+  if (
+    typeof platform !== "string" ||
+    !/^[a-z][a-z0-9-]*$/.test(platform) ||
+    ["constructor", "prototype"].includes(platform)
+  )
+    throw new Error("公共目标代表平台无效；未知旧分类须显式改为 representativePlatform");
+  return { kind: "builder", representativePlatform: platform };
 }
 export type BuilderButton = "history" | "build-all";
 export interface BuilderHomeObservation {
-  category: BuilderTarget["category"];
+  representativePlatform: string;
+  entryKey: string;
   ready: boolean;
   view: "home";
   buttons: Record<
@@ -26,7 +59,9 @@ export interface BuilderUiPort {
 }
 
 /** Only the two declared home controls; no arbitrary selectors, text or button clicks. */
-export function readBuilderHome(document: Document): Omit<BuilderHomeObservation, "category"> {
+export function readBuilderHome(
+  document: Document,
+): Omit<BuilderHomeObservation, "representativePlatform" | "entryKey"> {
   const visible = (element: Element) =>
     (element as HTMLElement).getClientRects().length > 0 &&
     element.ownerDocument.defaultView!.getComputedStyle(element).visibility !== "hidden";

@@ -236,6 +236,7 @@ async function observe(
   };
   const builder = {
     caseDom: async () => ({ groups: [["build"]] }),
+    bindHistoryPlatformTitle: () => {},
     installProbe: async () => {},
     baseline: async () => [],
     latestSnapshot: async () => ({ at: 1, tasks: [] }),

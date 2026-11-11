@@ -214,7 +214,6 @@ test("new platform and standard field definitions are carried by native catalog,
       id: p.id,
       label: p.label,
       configurationTitle: p.label,
-      category: "X-Application",
       fields: { qaQuality: { kind: "string", control: "enum" } },
     },
   ];
@@ -232,6 +231,10 @@ test("new platform and standard field definitions are carried by native catalog,
     ["qa.debug", "qa.publish"],
   );
   assert.deepEqual(loaded.document.targets, f.catalog.targets);
+  const renamed = structuredClone(f.catalog.targets![0]);
+  renamed.category = "QA 新增显示分类";
+  assert.deepEqual(validateConfigurationTargets([renamed]), [renamed]);
+  assert.ok(!describeNativeCaseCapabilities().targetDescription.required.includes("category"));
   assert.equal(configurationStepsPlan(loaded).execution.willSubmit, false);
   const blocked = await loadNativeCases(f.file, { project: f.root, cases: "qa.publish" });
   assert.equal(blocked.document.cases.length, 0);

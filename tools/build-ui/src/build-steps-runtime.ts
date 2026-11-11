@@ -14,6 +14,7 @@ import { readStageUi } from "./stage-ui.js";
 export interface StepBuilderBinding {
   builder: Builder;
   platforms: string[];
+  entryKey?: string;
   activate?(): Promise<void>;
 }
 
@@ -25,10 +26,10 @@ export async function createStepBuildPort(
   signal: AbortSignal,
   platform?: string,
 ) {
+  if (Array.isArray(builder) && !builder.length) throw new Error("缺少构建分类适配");
   const bindings = Array.isArray(builder)
-    ? builder
+    ? builder.filter((binding) => binding.platforms.length > 0)
     : [{ builder, platforms: platform ? [platform] : [] }];
-  if (!bindings.length) throw new Error("缺少构建分类适配");
   const platformBuilders = new Map<string, Builder>();
   for (const binding of bindings)
     for (const id of binding.platforms) {
@@ -59,12 +60,45 @@ export async function createStepBuildPort(
   await session.verify();
   const baselineIds = new Set<string>();
   let initialIds: string | undefined;
-  // All categories establish the same complete baseline before any case can submit.
+  const initialization: Array<{ phase: string; entryKey?: string; platforms: string[] }> = [];
+  const prepare = async <T>(
+    binding: StepBuilderBinding | undefined,
+    phase: string,
+    action: () => Promise<T>,
+  ) => {
+    const step = { phase, entryKey: binding?.entryKey, platforms: binding?.platforms ?? [] };
+    try {
+      const result = await action();
+      initialization.push(step);
+      return result;
+    } catch (cause) {
+      const probe = binding
+        ? await binding.builder.probeEvidence().catch((error: unknown) => ({
+            unavailable: error instanceof Error ? error.message : "无法读取观察器现场",
+          }))
+        : undefined;
+      throw new ConfigurationOperationError(
+        "task",
+        `任务观察初始化失败（${binding?.entryKey ?? "任务来源"}/${phase}）：${cause instanceof Error ? cause.message : "未知错误"}`,
+        "stop",
+        {
+          cause,
+          diagnostic: {
+            phase: "task-observer-initialization",
+            observations: { ...step, completed: initialization, probe },
+          },
+        },
+      );
+    }
+  };
+  // Only participating categories are observed. Each still reads the complete project queue.
   for (const binding of bindings) {
     await session.verify();
-    await binding.activate?.();
-    await binding.builder.installProbe([], binding.platforms.includes("openpaas"), keys);
-    const baseline = await binding.builder.baseline(true);
+    await prepare(binding, "activate", async () => binding.activate?.());
+    await prepare(binding, "install", () =>
+      binding.builder.installProbe([], binding.platforms.includes("openpaas"), keys),
+    );
+    const baseline = await prepare(binding, "baseline", () => binding.builder.baseline(true));
     const ids = JSON.stringify(baseline.map((t) => t.id).sort());
     if (initialIds !== undefined && ids !== initialIds)
       throw new Error("两类面板的完整任务基线不一致");
@@ -75,7 +109,7 @@ export async function createStepBuildPort(
     bindings.map((binding) => binding.builder),
     bindings.map((binding) => binding.platforms),
   );
-  await observer.poll();
+  await prepare(undefined, "initial-poll", () => observer.poll());
   observer.start(() => {});
   const port: BuildStepsPort = {
     source: observer,
@@ -143,6 +177,7 @@ export async function createStepBuildPort(
       await operations.assertSnapshotCurrent(snapshot);
       if (!configurationEqual(configuration, await builder.readConfiguration(["debug"])))
         throw new ConfigurationOperationError("snapshot", "配置身份在回读期间发生变化", "stop");
+      builder.bindHistoryPlatformTitle(operations.platform, operations.context.title);
       return {
         configuration,
         values,
@@ -155,6 +190,7 @@ export async function createStepBuildPort(
       const builder = forPlatform(operations.platform);
       return builder.click("button", "构建", undefined, undefined, async () => {
         await verify();
+        await observer.poll();
         assertBuildOnly(await builder.caseDom(readStageUi));
       });
     },
@@ -163,13 +199,24 @@ export async function createStepBuildPort(
       const builder = forPlatform(task.platform);
       await bindings.find((binding) => binding.builder === builder)?.activate?.();
       await builder.revealTask(task);
-      await waitFor(
-        "本次卡片成功",
-        () => builder.successText(task.outputName!, task.platform),
-        15_000,
-        signal,
-      );
+      try {
+        await waitFor(
+          "本次卡片成功",
+          () => builder.successText(task.outputName!, task.platform),
+          15_000,
+          signal,
+        );
+      } catch (cause) {
+        if (signal.aborted || cause instanceof ConfigurationOperationError) throw cause;
+        throw new ConfigurationOperationError("assertion", "本次成功卡片核验失败", "failed", {
+          cause,
+          diagnostic: {
+            phase: "history-card",
+            observations: { taskId: task.id, ...builder.historyCardEvidence() },
+          },
+        });
+      }
     },
   };
-  return { port, stop: () => observer.stop() };
+  return { port, initialization, stop: () => observer.stop() };
 }

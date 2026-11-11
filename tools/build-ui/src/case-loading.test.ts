@@ -51,6 +51,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
           password: "fixture-private-password",
           aliasPassword: "fixture-private-alias-password",
         },
+        nativeEncryption: { key: "fixture-private-native-key" },
       },
       platformValues: { android: { publish: { "packages.android.apiLevel": 35 } } },
     }),

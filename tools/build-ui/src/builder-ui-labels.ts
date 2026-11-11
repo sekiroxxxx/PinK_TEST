@@ -9,7 +9,9 @@ export function builderUiLabels(kind: string, label: string): string[] {
         }
       : kind === "platform"
         ? { "Web 桌面端": ["Web Desktop"] }
-        : {};
+        : kind === "status"
+          ? { 成功: ["Success"] }
+          : {};
   return [label, ...(aliases[label] ?? [])];
 }
 

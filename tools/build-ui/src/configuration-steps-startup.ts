@@ -1,12 +1,11 @@
 import { createStepBuildPort } from "./build-steps-runtime.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
-import { readFile, realpath, stat, mkdir, writeFile, readdir } from "node:fs/promises";
-import { ExecutionStop, checkExecutionStop } from "./execution-stop.js";
+import { readFile, realpath, stat, mkdir, writeFile } from "node:fs/promises";
+import { type ExecutionStop, checkExecutionStop } from "./execution-stop.js";
+import { ConfigurationRunSession } from "./configuration-run-session.js";
 import { dirname, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
-import type { Browser } from "playwright-core";
-import { Builder } from "./builder.js";
+import type { Builder } from "./builder.js";
 import { BuilderConfiguration } from "./configuration-runtime.js";
 import { ExecutionContext } from "./configuration-context.js";
 import {
@@ -25,7 +24,8 @@ import { platformCatalog, platformEntry } from "./platform-catalog.js";
 import { catalogStepResults } from "./catalog-steps-loader.js";
 import { configurationErrorDetail } from "./configuration-diagnostics.js";
 import { buildRunProgress, createProgressOutput } from "./run-progress.js";
-import { readBuilderHome } from "./builder-checks.js";
+import { readBuilderHome, type BuilderTarget } from "./builder-checks.js";
+import { getExecutorIdentity, verifyExecutorIdentity } from "./executor-identity.js";
 import {
   discoverBuilderRoutes,
   resolvePlatformRoute,
@@ -43,6 +43,9 @@ export async function configurationStepsLaunchPlan(
   },
 ) {
   const steps = configurationStepsPlan(loaded);
+  const readyIds = new Set(
+    steps.preflight.filter((c) => c.status === "ready").map((c) => c.caseId),
+  );
   if (
     loaded.document.schemaVersion === 1 &&
     new Set(loaded.document.cases.map((c) => c.platform)).size !== 1
@@ -51,6 +54,7 @@ export async function configurationStepsLaunchPlan(
   if (
     loaded.document.cases.some(
       (c) =>
+        readyIds.has(c.caseId) &&
         !("target" in c && c.target?.kind === "builder") &&
         !["web-desktop", "web-mobile"].includes(c.platform!) &&
         !(
@@ -84,6 +88,7 @@ export async function configurationStepsLaunchPlan(
     phase: "offline",
     runtimeVerified: false,
     buildSubmitted: false,
+    executor: await getExecutorIdentity(),
     startup: {
       pink,
       project,
@@ -108,9 +113,12 @@ export async function verifyConfigurationStepsPlan(file: string, current: Launch
     body.kind !== current.kind ||
     body.schemaVersion !== 1 ||
     integrity?.algorithm !== "sha256" ||
-    valueHash(body) !== integrity.sha256 ||
-    current.integrity.sha256 !== integrity.sha256
+    valueHash(body) !== integrity.sha256
   )
+    throw new Error("步骤文件、程序、工程或启动条件与预览计划不符，请重新预览");
+  if (!body.executor) throw new Error("旧预览计划缺少执行器身份，请重新预览");
+  await verifyExecutorIdentity(body.executor);
+  if (current.integrity.sha256 !== integrity.sha256)
     throw new Error("步骤文件、程序、工程或启动条件与预览计划不符，请重新预览");
 }
 
@@ -145,7 +153,12 @@ export async function runConfigurationStepsFromStartup(
   plan: LaunchPlan,
   stopControl?: ExecutionStop,
 ) {
+  await verifyExecutorIdentity(plan.executor);
   const v2 = loaded.document.schemaVersion === 2;
+  const readyIds = new Set(
+    plan.steps.preflight.filter((c) => c.status === "ready").map((c) => c.caseId),
+  );
+  const readyCases = loaded.document.cases.filter((c) => readyIds.has(c.caseId));
   let buildRuntime: Awaited<ReturnType<typeof createStepBuildPort>> | undefined;
   const options: Options = {
     pink: plan.startup.pink,
@@ -162,13 +175,7 @@ export async function runConfigurationStepsFromStartup(
   );
   await mkdir(directory, { recursive: true });
   await writeFile(join(directory, "plan.json"), JSON.stringify(plan, null, 2));
-  const abort = new AbortController();
-  const stop = stopControl ?? new ExecutionStop().listen();
-  const startupSignal = AbortSignal.any([abort.signal, stop.signal]);
-  let browser: Browser | undefined,
-    builder: Builder | undefined,
-    session: ExecutionContext | undefined;
-  const builders = new Map<string, Builder>();
+  let builder: Builder | undefined, session: ExecutionContext | undefined;
   let baseline: ReturnType<typeof formValues> | undefined;
   const warnings: string[] = [];
   const protectedFiles = {
@@ -183,28 +190,26 @@ export async function runConfigurationStepsFromStartup(
       ),
     );
   const before = await hashes();
-  const moduleDirectory = dirname(fileURLToPath(import.meta.url));
-  const executorFiles = await Promise.all(
-    (await readdir(moduleDirectory))
-      .filter((name) => name.endsWith(".js") && !name.endsWith(".test.js"))
-      .sort()
-      .map(async (name) => [name, await fileHash(join(moduleDirectory, name))]),
-  );
+  const configuredEngine = await engineSelection(options.project);
+  const run = new ConfigurationRunSession(stopControl);
+  const stop = run.stop;
   const data: Record<string, unknown> = {
     kind: "pink-configuration-steps-result",
     schemaVersion: loaded.document.schemaVersion,
     runId: directory,
     sourceSha256: loaded.sourceSha256,
     documentSha256: loaded.documentSha256,
-    executorSha256: valueHash(executorFiles),
-    executorFiles,
+    executor: plan.executor,
+    executorSha256: plan.executor.implementationSha256,
+    executorFiles: plan.executor.files,
     planSha256: plan.integrity.sha256,
     project: options.project,
     pink: { path: options.pink, version: plan.startup.version, commit: plan.startup.commit },
-    configuredEngine: await engineSelection(options.project),
+    configuredEngine,
     evidenceKind: "runtime",
     buildSubmitted: false,
     buildAttempted: false,
+    preflight: plan.steps.preflight,
     ...(loaded.catalog ? { catalog: loaded.catalog } : {}),
     startedAt: new Date().toISOString(),
     outcome: "incomplete",
@@ -212,15 +217,7 @@ export async function runConfigurationStepsFromStartup(
     phase: "preflight",
     processes: { workerPid: process.pid, supervisorPid: process.ppid },
     warnings,
-    cases: loaded.catalog
-      ? catalogStepResults(loaded, [])
-      : loaded.document.cases.map((c) => ({
-          caseId: c.caseId,
-          platform: c.platform,
-          ...("target" in c && c.target ? { target: c.target } : {}),
-          outcome: "not-run",
-          steps: [],
-        })),
+    cases: catalogStepResults(loaded, []),
   };
   const checkpointWarning = (error: CheckpointWriteError) => {
     if (!warnings.includes("运行检查点写出失败")) warnings.push("运行检查点写出失败");
@@ -240,7 +237,7 @@ export async function runConfigurationStepsFromStartup(
     await checkpoint.publish(data, render);
     outputProgress(progress);
   };
-  const unsubscribe = stop.subscribe(() => {
+  run.subscribe(() => {
     data.interruption = stop.requestInfo;
     data.lifecycle = "stopping";
     void publish(true).catch(() => {}); // The publisher records the error before draining.
@@ -251,7 +248,7 @@ export async function runConfigurationStepsFromStartup(
     checkExecutionStop(stop.signal);
     await loaded.verifySource?.();
     await loaded.inputs?.verify();
-    if (!loaded.document.cases.length) {
+    if (!readyCases.length) {
       data.evidenceKind = "offline-preflight";
       throw new ConfigurationOperationError(
         "precondition",
@@ -261,16 +258,22 @@ export async function runConfigurationStepsFromStartup(
     }
     data.phase = "connecting";
     await publish();
-    const connection = await startSession(options, startupSignal, (info) => {
+    const connection = await startSession(options, run.workSignal, (info) => {
       data.launch = info;
     });
-    browser = connection.browser;
-    const page = await findWindow(browser, options.project, startupSignal, options.pink);
+    run.ownBrowser(connection.browser);
+    const page = await findWindow(
+      connection.browser,
+      options.project,
+      run.workSignal,
+      options.pink,
+    );
     const identity = await assertWindowIdentity(page, options.project, options.pink);
     data.runtimeIdentity = identity;
     session = new ExecutionContext(identity, () =>
       assertWindowIdentity(page, options.project, options.pink),
     );
+    run.ownContext(session);
     const descriptor = (platform: string) =>
       loaded.document.targets?.find((p) => p.id === platform) ?? platformEntry(platform);
     data.phase = "connecting";
@@ -280,32 +283,44 @@ export async function runConfigurationStepsFromStartup(
       page,
       connection.endpoint,
       session,
-      startupSignal,
+      run.workSignal,
       options.configurationTimeoutMs,
       async (binding) => {
         builder = binding.builder;
-        builders.set(binding.entry.key, binding.builder);
+        run.ownBuilder(binding.entry.key, binding.builder);
         observations.set(binding.entry.key, { entry: binding.entry, home: binding.home });
         data.entryDiscovery = { entries: [...observations.values()] };
         await publish();
       },
-      abort.signal,
+      run.cleanupSignal,
     );
     const routes = new Map<string, ReturnType<typeof resolvePlatformRoute>>();
     const probeScopes = new Map<string, DiscoveredBuilder>();
     const unsupported = new Map<string, ConfigurationOperationError>();
-    for (const platform of new Set(
-      loaded.document.cases.flatMap((c) => (c.platform ? [c.platform] : [])),
-    )) {
+    const selectedPlatforms = [
+      ...new Set(
+        readyCases.flatMap((c) =>
+          "target" in c && c.target
+            ? [c.target.representativePlatform]
+            : c.platform
+              ? [c.platform]
+              : [],
+        ),
+      ),
+    ];
+    for (const platform of selectedPlatforms) {
       try {
         routes.set(platform, resolvePlatformRoute(discovery.bindings, descriptor(platform)));
       } catch (error) {
         if (!(error instanceof ConfigurationOperationError) || error.disposition !== "blocked")
           throw error;
         const target = loaded.document.targets?.find((target) => target.id === platform);
-        const onlyProbe = loaded.document.cases
-          .filter((c) => c.platform === platform)
-          .every((c) => c.steps.every((s) => s.op === "platform.probe" || s.op === "assert"));
+        const platformCases = readyCases.filter((c) => c.platform === platform);
+        const onlyProbe =
+          platformCases.length > 0 &&
+          platformCases.every((c) =>
+            c.steps.every((s) => s.op === "platform.probe" || s.op === "assert"),
+          );
         const readyLabels = target?.homeScope?.readyLabels;
         const scopes =
           onlyProbe && readyLabels?.length
@@ -325,9 +340,7 @@ export async function runConfigurationStepsFromStartup(
         unsupported.set(platform, error);
       }
     }
-    data.runtimeCapabilities = [
-      ...new Set(loaded.document.cases.flatMap((c) => (c.platform ? [c.platform] : []))),
-    ].map((platform) => ({
+    data.runtimeCapabilities = [...selectedPlatforms].map((platform) => ({
       platform,
       kind: "execution-support",
       status: unsupported.has(platform) ? "blocked" : "ready",
@@ -349,62 +362,73 @@ export async function runConfigurationStepsFromStartup(
       await discovery.activate(binding);
       builder = binding.builder;
     };
-    // Legacy public scopes remain logical scopes. Infer their unique entry from actual members;
-    // platform cases never use a persisted category title to navigate.
-    const publicBinding = (category: string) => {
-      const direct = discovery.bindings.filter(
-        (binding) => binding.entry.label === category || binding.home.categoryId === category,
-      );
-      const members = platformCatalog
-        .filter((platform) => platform.category === category)
-        .flatMap((platform) => {
-          try {
-            return [resolvePlatformRoute(discovery.bindings, platform).binding];
-          } catch (error) {
-            if (error instanceof ConfigurationOperationError && error.disposition === "blocked")
-              return [];
-            throw error;
-          }
-        });
-      const candidates = [...new Set(direct.length ? direct : members)];
-      if (candidates.length !== 1)
-        throw new ConfigurationOperationError(
-          "context",
-          "公共构建目标无法对应唯一的运行时入口",
-          "stop",
-          {
-            diagnostic: {
-              phase: "entry-discovery",
-              observations: { category, entries: candidates.map((binding) => binding.entry) },
-            },
-          },
-        );
-      return candidates[0];
-    };
+    // A negative probe's absence scope cannot stand in for a public target's actual card.
+    const publicBinding = (target: BuilderTarget) =>
+      resolvePlatformRoute(discovery.bindings, descriptor(target.representativePlatform)).binding;
     if (
       v2 &&
-      loaded.document.cases.some((c) =>
+      readyCases.some((c) =>
         c.steps.some((s) => s.op === "build.submit" || s.op.startsWith("stage.")),
       )
     ) {
-      const keys = loaded.document.cases.flatMap((c) =>
+      const keys = readyCases.flatMap((c) =>
         c.steps.flatMap((s) => ("fields" in s ? s.fields : "field" in s ? [s.field] : [])),
+      );
+      const observedPlatforms = new Set(
+        readyCases.flatMap((c) =>
+          c.platform && c.steps.some((s) => s.op === "build.submit" || s.op.startsWith("stage."))
+            ? [c.platform]
+            : [],
+        ),
       );
       buildRuntime = await createStepBuildPort(
         discovery.bindings.map((binding) => ({
           builder: binding.builder,
+          entryKey: binding.entry.key,
           platforms: [...routes]
-            .filter(([, route]) => route.binding === binding)
+            .filter(
+              ([platform, route]) => observedPlatforms.has(platform) && route.binding === binding,
+            )
             .map(([platform]) => platform),
           activate: () => activateBinding(binding),
         })),
         session,
         options.project,
         keys,
-        abort.signal,
+        run.cleanupSignal,
       );
-    } else if (v2 && loaded.document.cases.some((c) => c.platform === "openpaas"))
-      if (routes.has("openpaas")) await routeFor("openpaas").binding.builder.installProbe([], true);
+      run.ownTaskObserver(buildRuntime);
+      data.taskObservationInitialization = buildRuntime.initialization;
+    } else if (v2 && readyCases.some((c) => c.platform === "openpaas")) {
+      if (routes.has("openpaas")) {
+        const binding = routeFor("openpaas").binding;
+        await activateBinding(binding);
+        await binding.builder.installProbe([], true);
+      }
+    }
+    if (v2) {
+      const physicsPlatforms = new Set(
+        readyCases.flatMap((c) =>
+          c.platform &&
+          c.steps.some(
+            (s) =>
+              (s.op === "set" || s.op === "config.select") &&
+              s.field === "overwriteProjectSettings.includeModules.physics",
+          )
+            ? [c.platform]
+            : [],
+        ),
+      );
+      const observed = new Set<Builder>();
+      for (const platform of physicsPlatforms) {
+        const binding = routes.get(platform)?.binding;
+        if (binding && !observed.has(binding.builder)) {
+          await activateBinding(binding);
+          await binding.builder.observeEngineModules();
+          observed.add(binding.builder);
+        }
+      }
+    }
     data.phase = "executing";
     await publish();
     const result = await runConfigurationSteps(loaded, {
@@ -425,7 +449,7 @@ export async function runConfigurationStepsFromStartup(
       builderUi: {
         open: async (target) => {
           await session!.verify();
-          await activateBinding(publicBinding(target.category));
+          await activateBinding(publicBinding(target));
           if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
             throw new ConfigurationOperationError(
               "context",
@@ -436,13 +460,18 @@ export async function runConfigurationStepsFromStartup(
         },
         read: async (target) => {
           await session!.verify();
-          if (builder !== publicBinding(target.category).builder)
-            throw new ConfigurationOperationError("context", "公共检查所在分类已经改变", "stop");
-          return { category: target.category, ...(await builder!.caseDom(readBuilderHome)) };
+          const binding = publicBinding(target);
+          if (builder !== binding.builder)
+            throw new ConfigurationOperationError("context", "公共检查所在入口已经改变", "stop");
+          return {
+            representativePlatform: target.representativePlatform,
+            entryKey: binding.entry.key,
+            ...(await builder!.caseDom(readBuilderHome)),
+          };
         },
         home: async (target) => {
           await session!.verify();
-          await activateBinding(publicBinding(target.category));
+          await activateBinding(publicBinding(target));
           if ((await builder!.caseDom(readForm)).state !== "awaiting-dialog")
             throw new ConfigurationOperationError(
               "context",
@@ -517,7 +546,7 @@ export async function runConfigurationStepsFromStartup(
           builder!,
           session!,
           platform,
-          abort.signal,
+          run.cleanupSignal,
           target,
           route.card.label,
         );
@@ -576,64 +605,42 @@ export async function runConfigurationStepsFromStartup(
   } finally {
     data.phase = "cleanup";
     await publish().catch(() => {});
-    const cleanup: Array<{
-      resource: string;
-      outcome: "passed" | "failed";
-      reason?: string;
-      diagnostic?: ReturnType<typeof configurationErrorDetail>;
-    }> = [];
-    data.cleanup = cleanup;
-    const release = async (resource: string, action: () => Promise<void>) => {
-      try {
-        await action();
-        cleanup.push({ resource, outcome: "passed" });
-      } catch (error) {
-        const diagnostic = configurationErrorDetail(error);
-        cleanup.push({
-          resource,
-          outcome: "failed",
-          reason: diagnostic.chain[0]?.message ?? "资源释放失败，不能计收尾通过",
-          diagnostic,
-        });
-        warnings.push(`${resource}释放失败`);
+    data.cleanup = run.cleanup;
+    await run.finish(async (cleanup) => {
+      for (const entry of cleanup)
+        if (entry.outcome === "failed") {
+          warnings.push(`${entry.resource}释放失败`);
+          data.outcome = "failed";
+        }
+      await checkpoint.drain();
+      const after = await hashes().catch(() => undefined);
+      data.protectedFiles = {
+        before,
+        after,
+        unchanged: !!after && valueHash(before) === valueHash(after),
+      };
+      const engineUnchanged =
+        !!after &&
+        before.globalSettings === after.globalSettings &&
+        before.projectSettings === after.projectSettings;
+      data.engineSettingsUnchanged = engineUnchanged;
+      const tasksExpectedToChange = v2 && data.buildAttempted === true;
+      if (!engineUnchanged || (!tasksExpectedToChange && before.tasks !== after?.tasks)) {
         data.outcome = "failed";
+        warnings.push("任务文件存在非预期变化或引擎设置改变，需要核查");
       }
-    };
-    if (buildRuntime) await release("task-observer", () => buildRuntime!.stop());
-    session?.invalidate();
-    for (const [category, observer] of builders)
-      await release(`builder-probe:${category}`, () => observer.close());
-    if (browser) await release("browser-connection", () => browser!.close());
-    unsubscribe();
-    await checkpoint.drain();
-    if (!stopControl) stop.dispose();
-    const after = await hashes().catch(() => undefined);
-    data.protectedFiles = {
-      before,
-      after,
-      unchanged: !!after && valueHash(before) === valueHash(after),
-    };
-    const engineUnchanged =
-      !!after &&
-      before.globalSettings === after.globalSettings &&
-      before.projectSettings === after.projectSettings;
-    data.engineSettingsUnchanged = engineUnchanged;
-    const tasksExpectedToChange = v2 && data.buildAttempted === true;
-    if (!engineUnchanged || (!tasksExpectedToChange && before.tasks !== after?.tasks)) {
-      data.outcome = "failed";
-      warnings.push("任务文件存在非预期变化或引擎设置改变，需要核查");
-    }
-    if (stop.requestInfo) {
-      data.interruption = stop.requestInfo;
-      data.outcome = "failed";
-      data.stopped = true;
-    }
-    data.lifecycle = "finished";
-    data.phase = "finished";
-    data.finishedAt = new Date().toISOString();
-    await publish(true);
-    console.log(`结果：${join(directory, "result.json")}`);
-    console.log(`报告：${join(directory, "report.html")}`);
+      if (stop.requestInfo) {
+        data.interruption = stop.requestInfo;
+        data.outcome = "failed";
+        data.stopped = true;
+      }
+      data.lifecycle = "finished";
+      data.phase = "finished";
+      data.finishedAt = new Date().toISOString();
+      await publish(true);
+      console.log(`结果：${join(directory, "result.json")}`);
+      console.log(`报告：${join(directory, "report.html")}`);
+    });
   }
   return { directory, outcome: data.outcome };
 }

@@ -5,7 +5,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Builder } from "./builder.js";
 import { createStepBuildPort } from "./build-steps-runtime.js";
-import { ExecutionContext } from "./configuration-context.js";
+import { ExecutionContext, ConfigurationOperationError } from "./configuration-context.js";
+import { configurationErrorDetail } from "./configuration-diagnostics.js";
 import { ConfigurationOperations, type ConfigurationPort } from "./configuration-operations.js";
 import type { CaseValue } from "./finalized-cases.js";
 import { waitFor, type Task } from "./common.js";
@@ -53,6 +54,10 @@ test("runtime adapter captures mandatory UI identity and resolves real scene met
     let observedKeys: string[] = [];
     // These are external page observations. The capture, scene lookup and snapshot verification are real.
     const builder = {
+      bindHistoryPlatformTitle: (platform: string, title: string) => {
+        assert.equal(platform, "web-mobile");
+        assert.equal(title, "mobile");
+      },
       caseDom: async () => ({ groups: [["build"]] }),
       installProbe: async (_a: unknown, _b: unknown, keys: string[]) => {
         observedKeys = keys;
@@ -148,8 +153,16 @@ test("cross-category runtime establishes one baseline and routes clicks/cards wi
     });
     const device = binding("X-Device", "web-desktop"),
       application = binding("X-Application", "wechatgame");
+    const unused = {
+      platforms: [],
+      activate: async () => assert.fail("an unrelated category must not be activated"),
+      builder: {
+        installProbe: async () => assert.fail("an unrelated category must not be observed"),
+        latestSnapshot: async () => assert.fail("an unrelated category must not be polled"),
+      } as unknown as Builder,
+    };
     runtime = await createStepBuildPort(
-      [device, application],
+      [device, unused, application],
       session,
       project,
       ["name"],
@@ -209,6 +222,73 @@ test("cross-category runtime establishes one baseline and routes clicks/cards wi
     );
   } finally {
     await runtime?.stop();
+    assert.equal(dirname(project), tmpdir());
+    await rm(project, { recursive: true });
+  }
+});
+
+test("observer initialization identifies its failing phase and preserves the page cause without retrying", async () => {
+  const project = await mkdtemp(join(tmpdir(), "pink-step-probe-failure-"));
+  try {
+    await mkdir(join(project, "assets"));
+    const identity = { executable: "offline.exe", project, windowId: 1 };
+    for (const phase of ["baseline", "initial-poll"] as const) {
+      const session = new ExecutionContext(identity, async () => identity);
+      const failure = new ConfigurationOperationError(
+        "task",
+        "embedded document replaced",
+        "stop",
+        {
+          diagnostic: {
+            phase: "baseline.return-home",
+            observations: { installedDocument: 100, currentDocument: 200 },
+          },
+        },
+      );
+      let installs = 0,
+        polls = 0;
+      const builder = {
+        installProbe: async () => {
+          installs++;
+        },
+        baseline: async () => {
+          if (phase === "baseline") throw failure;
+          return [];
+        },
+        latestSnapshot: async () => {
+          polls++;
+          throw failure;
+        },
+        probeEvidence: async () => ({ installedDocument: 100, currentDocument: 200 }),
+      } as unknown as Builder;
+      await assert.rejects(
+        createStepBuildPort(
+          [{ builder, platforms: ["web-desktop"], entryKey: "native-fixture" }],
+          session,
+          project,
+          [],
+          new AbortController().signal,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ConfigurationOperationError);
+          assert.equal(error.disposition, "stop");
+          const diagnostic = error.diagnostic?.observations as { phase: string; entryKey?: string };
+          assert.equal(diagnostic.phase, phase);
+          if (phase === "baseline") assert.equal(diagnostic.entryKey, "native-fixture");
+          const detail = configurationErrorDetail(error);
+          assert.ok(detail.chain.some((cause) => cause.message === "embedded document replaced"));
+          assert.ok(
+            detail.chain.some((cause) =>
+              JSON.stringify(cause.diagnostic).includes("currentDocument"),
+            ),
+          );
+          return true;
+        },
+      );
+      assert.equal(installs, 1);
+      assert.equal(polls, phase === "baseline" ? 0 : 1);
+    }
+  } finally {
     assert.equal(dirname(project), tmpdir());
     await rm(project, { recursive: true });
   }

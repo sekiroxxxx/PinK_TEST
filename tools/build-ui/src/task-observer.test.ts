@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { TaskObserver } from "./task-observer.js";
 import { observedBuildTask } from "./build-operations.js";
+import { ConfigurationOperationError } from "./configuration-context.js";
+import { configurationErrorDetail } from "./configuration-diagnostics.js";
 import type { Builder } from "./builder.js";
 import type { Task, TaskSnapshot } from "./common.js";
 
@@ -14,6 +16,42 @@ const task = (state: string): Task => ({
 });
 const builder = (get: () => TaskSnapshot) =>
   ({ latestSnapshot: async () => get() }) as unknown as Builder;
+
+test("background observation failure retains the source and page diagnostic and never reinstalls it", async () => {
+  const failure = new ConfigurationOperationError("task", "probe owner lost", "stop", {
+    diagnostic: {
+      phase: "task-observer",
+      observations: { installedDocument: 10, currentDocument: 11 },
+    },
+  });
+  let reads = 0;
+  const observer = new TaskObserver(
+    [
+      builder(() => {
+        reads++;
+        throw failure;
+      }),
+    ],
+    [["web-desktop"]],
+  );
+  observer.start(() => assert.fail("a failed read cannot publish an update"));
+  await observer.stop();
+  assert.throws(
+    () => observer.assertHealthy(),
+    (error: unknown) => {
+      const detail = configurationErrorDetail(error);
+      assert.ok(detail.chain.some((cause) => cause.message === "probe owner lost"));
+      assert.ok(
+        detail.chain.some(
+          (cause) => cause.diagnostic && JSON.stringify(cause.diagnostic).includes("web-desktop"),
+        ),
+      );
+      return true;
+    },
+  );
+  assert.equal(reads, 1);
+  assert.deepEqual(observer.tasks(), []);
+});
 
 test("an inactive category's delayed waiting response cannot replace the owning category's processing task", async () => {
   let own: TaskSnapshot = {

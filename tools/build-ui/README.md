@@ -4,15 +4,49 @@
 
 需要 Windows、Node.js 24+ 和已能手动正常构建的工程及 SDK 环境。包和工程由启动参数显式指定，工具不修改引擎设置。1958 包及后续包的历史证据以各结果文件记载的版本、用例和范围为准，不替代当前版本的新入口验收。
 
+## 预览与执行器身份
+
+原生 Catalog 和步骤文件继续编译到现有 v2。新启动计划的 `executor` 保存合同能力版本、运行 JS 内容清单及 `implementationSha256`，纳入原计划哈希；执行前核对预览身份、当前进程加载身份和磁盘身份一致，运行结果复用同一身份。旧预览缺少身份时必须重新预览，历史结果文件不改写。
+
+宿主通过 `dist/native-case-contract.js` 的 `getExecutorIdentity()` 取得已加载身份，通过 `verifyExecutorIdentity(expected)` 在准备/启动边界核对。原生能力描述的 `capabilityVersion` 为 `5`；身份对象为 `{kind:"pink-build-executor-identity",schemaVersion:1,capabilityVersion,implementationSha256,files}`，其中 `files` 为排序的 `[name,sha256]` 清单，覆盖 dist 顶层非测试运行 JS。宿主应先经过正式身份检查再使用直接缓存的 Catalog/字段合同，并核对 CLI 预览中的 `executor`；旧历史预览允许展示，不能作为新执行计划启动。
+
+只修改用例 JSON 时重新预览即可。执行器代码更新后，已加载的 ESM 合同不能通过入口 URL 加查询参数替换；宿主须提示重新加载工作台后再预览，不自行重启服务或清理草稿。此身份检查不代表 PinK 实机或构建验收通过。
+
 ## 当前实例入口与执行能力
 
-统一 v2 启动入口从运行实例的 Builder 活动容器标识发现入口，核对 `SUD.pink-builder` Webview 后读取实际首页和平台卡片，再把用例平台对应到唯一入口。平台用例不使用保存的分类显示名导航，不维护 PinK 版本到分类名称的映射。卡片有平台 ID 时按 ID 核对，否则使用已有目标描述中的精确卡片名与配置页标题合同；无法唯一对应会明确受阻，多个匹配或上下文身份失效仍停止后续操作。原有公共分类目标只在其已知成员能对应唯一实际入口时复用，不猜选第一个容器。
+统一 v2 启动入口从运行实例的 Builder 活动容器标识发现入口，核对 `SUD.pink-builder` Webview 后读取实际首页和平台卡片，再把用例平台对应到唯一入口。平台用例不使用保存的分类显示名导航，不维护 PinK 版本到分类名称的映射。卡片有平台 ID 时按 ID 核对，否则使用已有目标描述中的精确卡片名与配置页标题合同；无法唯一对应会明确受阻，多个匹配或上下文身份失效仍停止后续操作。公共 UI 按其明确声明的代表平台对应唯一入口，不按分类名称或整组成员推断。
+
+标准 `targets` 的必填项为 `id/label/configurationTitle/fields`；`category` 是可选非空显示文本，可以保留旧名称或填写新的分类名，不参与导航。`id` 仍是用例的平台绑定身份，卡片匹配和同类控件适配边界不变。不存在平台的探查仍需 `homeScope.readyLabels` 唯一对应完整就绪主页，不能用省略分类放宽缺失断言。
+
+公共 UI 的规范目标为 `{"kind":"builder","representativePlatform":"web-desktop"}`，代表平台须已适配或在 `targets` 中明确声明。`builder.open/read/assert(builder-state)/home` 只操作该代表平台所在构建主页，不打开配置页、不扩大成所有平台检查。观察归属使用 `representativePlatform/entryKey`。
+
+旧公共目标 `category:X-Device` 在加载时固定转换为代表平台 `web-desktop`，`category:X-Application` 转换为 `wechatgame`；此表仅用于输入兼容，不是运行时分类映射。未知旧分类、代表平台未声明或同时填写两个字段均拒绝，不猜选入口。加载与组装只返回规范化执行快照，不改原定义文件；旧历史报告继续按原分类展示。组合模板与参数化 flow 使用同一规则，v2 格式和现有步骤操作不变。本批只有离线验证，尚未新增实机证据。
 
 首页须等嵌套文档完成并实际收到平台卡片后才建立路由；页脚先出现、卡片仍为空属于加载未完成，不能据此判定平台缺失。OpenPaaS 等待已有游戏时持续核对配置页归属；账号/已有游戏前提不足可受阻收尾，页面身份失效仍立即停止，不借机自动重试或放宽归属检查。
 
 任务中的初始场景可由 SDK 在构建时从 UUID 解析为 `db://` 路径。入队和终态均用捕获时从当前工程 `.scene.meta` 独立发现的同一场景身份核对；不从任务自己声明的 `scenes` 推导预期，不接受未知、歧义或不同场景。入口发现遵守停止信号，长期 UI 适配器使用独立的安全收尾信号，使已确认归属的关页和恢复不会被普通停止请求本身拦截。
 
 配置页打开并确认归属后、写入前，检查本轮标准控件与构建按钮的适配能力。前序配置可能改变显示条件时，检查记为延后，实际控件仍须在对应写入前通过原有适配器核对。标准目标仍使用现有 `targets` 字段描述，新同类平台、标准字段和枚举值通过用例描述及实际 UI 接入；全新页面机制或控件仍需适配。入口、控件不支持与 Catalog 的材料受阻分别记录在结果及 HTML 报告中；完整选择、顺序、计划完整性和安全收尾不变。此段描述实现机制，实际版本与平台通过情况以对应实机结果为准。
+
+## 运行归属与前提判定
+
+每次运行由内部 `ConfigurationRunSession` 持有停止订阅、CDP 连接、页面上下文、Builder 观察器和任务观察器。获取后立即登记；普通停止只中止后续步骤/入口准备，不取消已关联任务收集或已确认归属的安全收尾。用例操作仍负责页面关闭和其显式要求的恢复，身份丢失时保留现场，不恢复未知页面；普通构建不新增恢复。
+
+任务观察只准备本轮 ready 构建或阶段 UI 用例实际绑定的入口，无关分类不安装或轮询观察器；每个参与入口仍从 UI 读取完整工程任务基线，不按平台过滤已有队列。首次打开、重新激活和安装监听前共用实际页面就绪检查：目标 Webview 唯一可见，内容文档完成加载、构建页入口可用，且没有等待替换的 `pending-frame`；活动栏展开或旧页面仍可见不能替代就绪。安装时记录嵌入文档的标准 CDP 节点身份，在历史页输入前后及基线返回主页后核对监听归属。初始化失败记录入口、平台、具体输入阶段、文档和 active/pending Frame 状态，后台读取失败保留同一底层错误链；安装后出现非预期替换仍停止，不自动重装观察器或重试构建。任务观察准备成功不等于构建或安全停止已实机通过，模拟文档切换的离线回归也不能替代实机验收。
+
+成功卡片仍按本轮任务的批次时间、平台和输出名唯一核对。平台 ID 绑定到本轮已核对配置页的实际标题，再精确匹配卡片的“平台标题 - 输出名”；不从可由目录配置覆盖的图标 URL 推断平台 ID。缺少本轮标题绑定时停止，卡片超时记录期望标题、匹配数和实际状态。日期显示沿用当前 Builder 注入的 `locale` 及随包日期格式（包括英文月份缩写的句点），历史入口和成功标签复用已核对的中英文标签；同批次时间或同名卡片存在歧义时仍失败，不接受其他历史成功记录替代，也不把生成状态当作构建成功。
+
+3D 物理字段 `overwriteProjectSettings.includeModules.physics` 的实际引擎候选沿用 SDK 机器值。打开配置页前按需复用 Builder 消息监听，严格识别页面自动取得的 `getEngineModules` 返回结构，只保存 `physics.options` 的机器值和当前显示标签；不主动调用接口、不读取 React 状态、不维护中英文翻译表。数据按当前文档及配置页打开周期隔离，旧响应序列不覆盖新结果；仅配置用例不因此启动任务基线或任务观察器。当前控件 `aria-controls` 对应的唯一列表内完成候选定位和点击，最后独立回读机器值。页面额外添加的 `inherit-project-setting` 分支仍按原适配单列，不计为此项元数据覆盖。
+
+物理候选缺失或禁用时，只有原控件、原列表及其唯一 `select-content` 焦点容器仍可确认归属，才发送一次 Escape；核对列表关闭且机器值未改变。归属不明或清理失败保持停止。此实现的中英文与失败收尾离线回归使用模拟 UI 响应，不替代当前打包版的真实构建/安全停止验收。
+
+运行收尾只执行一次：先释放任务观察器、使页面上下文失效、释放 Builder 观察器，再断开浏览器连接、排空检查点并写最终报告。某项释放失败仍继续其他释放，保留原始失败及底层清理原因；报告写出失败也必须释放本次停止监听，不重试 UI 或重复生成任务。这里只断开工具持有的连接，不关闭用户的 PinK 窗口。
+
+原生步骤、组合和 Catalog 共用启动计划的 `steps.preflight` 完整有序清单，包含 `caseId/platform?/target?/title?/group?/status/gaps`。`status` 为 `ready/blocked/not-applicable`；`willSubmit` 只统计 ready 用例。组合的 `caseIds/sourceMap` 保留所有选择，不过滤受阻项；`preflight` 纳入新组装快照的映射哈希，旧组装映射仍沿用其原合同。
+
+v2 用例可携带 `precondition:{status:"blocked"|"not-applicable",gaps:[{kind,reason}]}`，可选 `title/group` 仅用于展示。有完整步骤时仍校验全部操作、输入类型、引用及收尾；无操作链的明确保留项只能使用 `steps:[]/finally:[]`，不会伪造动作。材料引用未能解析会阻塞整条 flow，独立用例继续；普通受阻/不适用项不占构建组，`onFailure:stop` 的受阻项保留顺序停止边界，不发送 UI 请求。不适用项不当作通过。每组最多两项，不截取半条用例运行。
+
+未知操作、错误类型、引用或步骤依赖属于定义错误，组合不产出可执行文档；缺材料、适用性及已声明的执行支持缺口保留为逐项前提。当前输出依赖仍限于同一 flow，跨用例输出是定义错误，不新增依赖语言。全受阻/不适用时只生成预检 JSON/HTML 报告，不启动或连接 PinK；部分可执行时仅为 ready 项准备 UI 和构建观察。编译得到的前提记录属于本轮快照，补齐材料后从原定义重新准备/预览，不在运行中自动解除，也不改写旧结果。前端展示清单、原因、来源和报告入口，不自行推断 readiness 或过滤原选择。
 
 ## 标准目标配置检查补充（2026-11-02）
 
@@ -60,11 +94,11 @@
 
 `listNativeCaseReferences(document)` 是纯定义清单，返回 `{documentSha256,items:[{caseId,platform?,target?,title,origin}]}`。origin 提供 kind、sourcePath 和对应 combinationId/scenarioId/familyId/sampleId；清单不证明可执行。FORM-C01.s01 的 web-desktop 正式身份是 FORM-C01.s01.web-desktop，样本别名不作为唯一 case-ref。创建引用、Catalog 运行选择共用清单展开规则，前端直接执行和插入组合都使用正式 caseId，不拼后缀；跨来源缓存须连同来源哈希保存。该接口只读取传入的内嵌定义，不混入本机外部表单样本。
 
-宿主可沿现有 authorAutomation 转发 `validateComposition`（definition/selection?）和 `listCaseReferences`（document）；工作台桥接由前端工程负责。本轮真实 preview 仍独立调用 `composeNativeCases(...,{project,materials})` 并冻结计划，不过滤 case-blocked，不因保存通过放宽运行前提。两个函数从 `dist/native-case-contract.js` 再导出；本批仅格式、类型静态检查及工具编译，未运行功能/模拟自动化或产品构建，待独立 QA 复查。
+宿主可沿现有 authorAutomation 转发 `validateComposition`（definition/selection?）和 `listCaseReferences`（document）；工作台桥接由前端工程负责。真实 preview 独立调用 `composeNativeCases(...,{project,materials})` 并冻结计划；前提缺口逐项保留为 preflight/precondition，不能因为保存通过就放宽运行条件。两个函数从 `dist/native-case-contract.js` 再导出；最初接入只有静态证据，后续变更和离线验证不替代独立 QA 的实机复查。
 
 边界保留：前端把 Catalog 引用“创建独立副本”时仍调用 compose；若没有工程/材料上下文，含符号材料的副本可能受阻。本批不新增拆链或副本接口、不放宽校验，普通复制引用不受影响；由独立 QA 记录和复查。
 
-宿主可从 `dist/native-case-contract.js` 导入 `describeCaseComposition/createCaseComposition/composeNativeCases/mapCompositionResults`。组合 JSON 支持有序分组、原生用例引用、参数化片段和显式动作链；本轮可选择实例、调整顺序和覆盖输入。依赖、断言及收尾不完整时只返回诊断，不生成可执行的部分结果。
+宿主可从 `dist/native-case-contract.js` 导入 `describeCaseComposition/createCaseComposition/composeNativeCases/mapCompositionResults`。组合 JSON 支持有序分组、原生用例引用、参数化片段和显式动作链；本轮可选择实例、调整顺序和覆盖输入。定义中的依赖、断言及收尾不完整时只返回诊断，不生成可执行的部分结果；单项环境前提不足按上述 preflight 规则保留，不使其他独立用例消失。
 
 组合定义先由 `composeNativeCases` 生成原生 v2，宿主另存 `cases.json` 和含 sourceMap 的 assembly 快照，再复用原启动/计划校验入口。CLI 不直接读取 `pink-case-composition`。原生用例引用按完整用例执行，局部操作选择仅用于显式 flow，before/finally 始终保留。
 
@@ -133,7 +167,7 @@ $qaPlan = '.\results\qa-web-desktop-plan.json' # 使用尚不存在的文件名
 
 旧 `Profile/Suite` 入口继续保留：`existing` 沿用当前配置，`debug/release-a` 含18平台适用基础项，`release-b/release-c-local` 限原优先8平台。[首批定稿](../../docs/pink-build-ui-automation-design.md#首批交付范围定稿2026-10-19)及后面的日期章节记录历史范围；当前 v2 能力和保留缺口以[输入合同](../../docs/pink-build-case-input-contract.md#四组目录接入-v2-与专项步骤2026-10-24离线)为准。
 
-入口统一为左侧 X-Device / X-Application 分类按钮，按可访问的 tab 名称与展开状态定位；顶部分类菜单在连续执行时出现 Webview 遮挡，故不再作为工具入口。启动时恢复最小化的指定 PinK 主窗口并请求前台显示，以使 Webview 正常渲染和接收输入。分类切换、配置和构建均为真实输入，不依赖固定坐标或新增快捷键。执行期间不要最小化窗口或同时操作配置。
+统一 v2 入口使用左侧当前 Builder 活动容器标识与展开状态定位；旧版独立模式仍保留其分类入口合同。顶部分类菜单在连续执行时出现 Webview 遮挡，故不作为统一入口。启动时恢复最小化的指定 PinK 主窗口并请求前台显示，以使 Webview 正常渲染和接收输入。入口切换、配置和构建均为真实输入，不依赖固定坐标或新增快捷键。执行期间不要最小化窗口或同时操作配置。
 
 2026-10-24：新 `-CatalogFile` 入口的 web-desktop 单例实机验收已通过，[报告](../../results/2026-10-24-catalog-v2-web-desktop-1792837002174/2026-10-24T10-27-00.517Z-steps/report.html)包含修改 JSON 后的真实配置、任务关联、成功判定及自动恢复。使用当前 1949 包、原工程和 custom 引擎；未验证产物或重跑其他平台。已补已知阶段 ID 小写文案适配；初次失败、人为中断与观察器清理记录、准确证据边界见[验收记录](../../docs/pink-build-case-input-contract.md#四组统一入口-web-desktop-实机验收2026-10-24)。
 
@@ -174,7 +208,7 @@ $qaPlan = '.\results\qa-web-desktop-plan.json' # 使用尚不存在的文件名
 
 `-StepsFile` 的同一份 v2 JSON 现在可含多平台 `cases`。按文件顺序每组最多两例：组内逐例配置、回读、唯一关联提交，走到 `build.wait` 暂挂；提交阶段结束后依次等待、核对及恢复，本组收尾后才开下一组。同平台重复会提前分组，避免配置和恢复基线互相覆盖；受阻或提前结束不补进第三项。等待后的 JSON 步骤仍按顺序执行。
 
-X-Device / X-Application 复用已有 Builder 和完整任务观察器，启动时统一核对基线，切分类保留观察。每例通过自己的提交步骤引用和 taskId 核对入队/终态参数；任务与结果不能跨例串用。普通失败安全收尾后按 `onFailure` 继续或停止；提交无法唯一确认、身份/观察失效、超时或恢复失败立即停止新提交，不自动重试。已关联任务仍尽量收集，不安全时不恢复配置。
+当前实例的构建入口复用已有 Builder 和完整任务观察器，启动时统一核对基线，切换入口保留观察。每例通过自己的提交步骤引用和 taskId 核对入队/终态参数；任务与结果不能跨例串用。普通失败安全收尾后按 `onFailure` 继续或停止；提交无法唯一确认、身份/观察失效、超时或恢复失败立即停止新提交，不自动重试。已关联任务仍尽量收集，不安全时不恢复配置。
 
 离线预览列出两项分组及屏障策略，并纳入哈希。结果 schema2 包含 `execution/groups`，保留用例与任务关联、分组时刻和实际队列观察；未观察到排队不冒作队列通过。该批先完成离线验证，随后[微信与 Web 手机跨分类实机验收](../../results/2026-10-24-v2-cross-platform-1792824582684/2026-10-24T07-11-45.981Z-steps/report.html)两例均通过配置、任务参数、成功卡片及恢复。详见[调度合同](../../docs/pink-build-case-input-contract.md#v2-跨平台两项调度2026-10-24第三批离线验证)，第四组迁移/材料缺口仍单列。
 

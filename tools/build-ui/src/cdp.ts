@@ -102,18 +102,33 @@ export class Cdp {
 
   /** Standard read-only CDP node identity, surviving repeated reads but not modal replacement. */
   async configurationNode(): Promise<number> {
+    return this.nodeIdentity(
+      `document.querySelector('#active-frame')?.contentDocument?.querySelector('button[aria-label="Close"]')?.parentElement?.parentElement`,
+      "配置页节点",
+    );
+  }
+
+  /** Identifies the actual embedded Document, rather than assuming the Webview target is stable. */
+  async contentDocumentNode(): Promise<number> {
+    return this.nodeIdentity(
+      `document.querySelector('#active-frame')?.contentDocument`,
+      "Builder 内容文档",
+    );
+  }
+
+  private async nodeIdentity(expression: string, label: string): Promise<number> {
     const evaluated = (await this.send("Runtime.evaluate", {
-      expression: `document.querySelector('#active-frame')?.contentDocument?.querySelector('button[aria-label="Close"]')?.parentElement?.parentElement`,
+      expression,
       returnByValue: false,
     })) as { result?: { objectId?: string }; exceptionDetails?: unknown };
     const objectId = evaluated.result?.objectId;
-    if (!objectId || evaluated.exceptionDetails) throw new Error("配置页节点不可用");
+    if (!objectId || evaluated.exceptionDetails) throw new Error(`${label}不可用`);
     try {
       const described = (await this.send("DOM.describeNode", { objectId })) as {
         node?: { backendNodeId?: number };
       };
       const node = described.node?.backendNodeId;
-      if (!Number.isInteger(node)) throw new Error("配置页节点身份不可用");
+      if (!Number.isInteger(node)) throw new Error(`${label}身份不可用`);
       return node!;
     } finally {
       await this.send("Runtime.releaseObject", { objectId });

@@ -260,12 +260,19 @@ test("all-passed reports list each case in result order with its own task and re
           restoration: "passed",
           tasks: [],
         },
+        {
+          caseId: "public.representative",
+          target: { kind: "builder", representativePlatform: "wechatgame" },
+          outcome: "passed",
+          restoration: "not-required",
+          tasks: [],
+        },
       ],
     }),
   );
   const html = await readFile(await writeResultReport(file), "utf8");
   const table = html.match(/<tbody>([\s\S]*?)<\/tbody>/)?.[1] ?? "";
-  assert.equal((table.match(/<tr>/g) ?? []).length, 2);
+  assert.equal((table.match(/<tr>/g) ?? []).length, 3);
   assert.match(table, /<td>1<\/td><td>web.copy&lt;&amp;&gt;<\/td>/);
   assert.match(table, /<td>2<\/td><td>public.home<\/td>/);
   assert.ok(table.indexOf("web.copy") < table.indexOf("public.home"));
@@ -274,13 +281,14 @@ test("all-passed reports list each case in result order with its own task and re
     "task-web",
     "成功 (success)",
     "公共主页 · X-Device",
+    "公共主页 · wechatgame",
     "未关联构建任务",
     "无需恢复",
     "已恢复",
   ])
     assert.ok(table.includes(expected), expected);
   assert.doesNotMatch(html, /private-signing-value|keystorePassword|<td>web.copy<&>/);
-  assert.match(html, /通过 2/);
+  assert.match(html, /通过 3/);
   assert.match(html, /本次没有失败、受阻或未完成用例/);
 });
 

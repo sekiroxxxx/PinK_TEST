@@ -132,7 +132,8 @@ function externalControls(homeFailure = false) {
     events: string[] = [];
   let generation = 0;
   const home: BuilderHomeObservation = {
-    category: "X-Device",
+    representativePlatform: "web-desktop",
+    entryKey: "fixture-builder-native",
     ready: true,
     view: "home",
     buttons: {
@@ -199,6 +200,108 @@ function externalControls(homeFailure = false) {
   return { env, events, values };
 }
 
+test("public targets migrate legacy categories without modifying input and reject ambiguous declarations", async () => {
+  const reuse = await sample();
+  const home = reuse.nodes.at(-1)!;
+  assert.equal(home.kind, "flow");
+  const definition: CaseComposition = { ...reuse, sources: [], fragments: [], nodes: [home] };
+  for (const [category, platform] of [
+    ["X-Device", "web-desktop"],
+    ["X-Application", "wechatgame"],
+  ]) {
+    const node = definition.nodes[0] as Extract<CompositionNode, { kind: "flow" }>;
+    node.target = { kind: "builder", category };
+    const original = structuredClone(definition);
+    const assembly = await composeNativeCases(definition);
+    assert.deepEqual(assembly.diagnostics, []);
+    assert.deepEqual(assembly.document!.cases[0].target, {
+      kind: "builder",
+      representativePlatform: platform,
+    });
+    assert.deepEqual(definition, original);
+    const raw = structuredClone(assembly.document!);
+    (raw.cases[0] as unknown as Record<string, unknown>).target = node.target;
+    const rawOriginal = structuredClone(raw);
+    const normalized = validateConfigurationSteps(raw);
+    assert.ok(normalized.schemaVersion === 2);
+    assert.deepEqual(normalized.cases[0].target, {
+      kind: "builder",
+      representativePlatform: platform,
+    });
+    assert.deepEqual(raw, rawOriginal);
+  }
+  for (const target of [
+    { kind: "builder", category: "终端" },
+    { kind: "builder", representativePlatform: "web-desktop", category: "X-Device" },
+    { kind: "builder", representativePlatform: "not-declared" },
+  ]) {
+    (definition.nodes[0] as unknown as Record<string, unknown>).target = target;
+    const invalid = await composeNativeCases(definition);
+    assert.equal(invalid.document, undefined);
+    assert.ok(invalid.diagnostics.length);
+  }
+  definition.targets = [
+    { id: "qa-public", label: "QA 平台", configurationTitle: "QA 配置", fields: {} },
+  ];
+  (definition.nodes[0] as Extract<CompositionNode, { kind: "flow" }>).target = {
+    kind: "builder",
+    representativePlatform: "qa-public",
+  };
+  const custom = await composeNativeCases(definition);
+  assert.deepEqual(custom.diagnostics, []);
+  assert.deepEqual(custom.document!.cases[0].target, {
+    kind: "builder",
+    representativePlatform: "qa-public",
+  });
+});
+
+test("representative platform parameters drive public operations and wrong observations stop without opening configuration", async () => {
+  const reuse = await sample();
+  const home = structuredClone(reuse.nodes.at(-1)!) as Extract<CompositionNode, { kind: "flow" }>;
+  home.target = { kind: "builder", representativePlatform: { $param: "representative" } };
+  const definition: CaseComposition = {
+    kind: "pink-case-composition",
+    schemaVersion: 1,
+    sources: [],
+    fragments: [
+      {
+        id: "public",
+        kind: "nodes",
+        parameters: { representative: { kind: "string" } },
+        nodes: [home],
+      },
+    ],
+    nodes: [
+      {
+        id: "check",
+        kind: "use",
+        fragmentId: "public",
+        arguments: { representative: "web-desktop" },
+      },
+    ],
+  };
+  const assembly = await composeNativeCases(definition);
+  assert.deepEqual(assembly.diagnostics, []);
+  const fixture = externalControls();
+  const result = await runConfigurationSteps(loaded(assembly.document!), fixture.env);
+  assert.equal(result.outcome, "passed");
+  assert.deepEqual(fixture.events, ["builder:open", "builder:home"]);
+  const chosen = definition.nodes[0] as Extract<CompositionNode, { kind: "use" }>;
+  chosen.arguments = { representative: "wechatgame" };
+  const changed = await composeNativeCases(definition);
+  assert.deepEqual(changed.diagnostics, []);
+  assert.deepEqual(changed.document!.cases[0].target, {
+    kind: "builder",
+    representativePlatform: "wechatgame",
+  });
+  const wrongPage = externalControls();
+  const stopped = await runConfigurationSteps(loaded(changed.document!), wrongPage.env);
+  assert.equal(stopped.cases[0].outcome, "stopped");
+  assert.equal(stopped.cases[0].failure!.code, "context");
+  assert.equal(stopped.cases[0].stopFollowingCases, true);
+  assert.ok(wrongPage.events.every((event) => event.startsWith("builder:")));
+});
+
 test("two references bind different values and outputs, execute real operations, restore and map evidence", async () => {
   const definition = await sample(),
     original = structuredClone(definition);
@@ -208,7 +311,10 @@ test("two references bind different values and outputs, execute real operations,
   assert.equal(assembled.document.cases.length, 3);
   assert.equal(assembled.willSubmit, false);
   assert.equal(assembled.document.cases[2].platform, undefined);
-  assert.deepEqual(assembled.document.cases[2].target, { kind: "builder", category: "X-Device" });
+  assert.deepEqual(assembled.document.cases[2].target, {
+    kind: "builder",
+    representativePlatform: "web-desktop",
+  });
   const allIds = assembled.sourceMap.flatMap((c) => [c.caseId, ...c.steps.map((s) => s.stepId)]);
   assert.equal(new Set(allIds).size, allIds.length);
   const fixture = externalControls();
@@ -500,6 +606,7 @@ test("two platform Catalog combinations plus one public check compile in selecte
   );
   assert.equal(progress.cases[1].platform, undefined);
   assert.equal(progress.cases[1].target?.kind, "builder");
+  assert.equal(progress.cases[1].target?.representativePlatform, "web-desktop");
 });
 
 test("invalid references, unsupported actions and missing cleanup return located errors and no partial document", async () => {
@@ -809,6 +916,18 @@ test("result mapping rejects the wrong native document, corrupted origins and un
   const assembly = await composeNativeCases(await sample());
   const result = await runConfigurationSteps(loaded(assembly.document!), externalControls().env);
   const payload = { ...result, documentSha256: assembly.documentSha256 };
+  const legacy = structuredClone(assembly);
+  delete legacy.preflight;
+  legacy.mappingSha256 = valueHash({
+    documentSha256: legacy.documentSha256,
+    definitionSha256: legacy.definitionSha256,
+    selectionSha256: legacy.selectionSha256,
+    sourceMap: legacy.sourceMap,
+  });
+  assert.equal(mapCompositionResults(legacy, payload).length, assembly.caseIds.length);
+  const changedPreflight = structuredClone(assembly);
+  changedPreflight.preflight![0].status = "blocked";
+  assert.throws(() => mapCompositionResults(changedPreflight, payload), /快照/);
   assert.throws(
     () => mapCompositionResults(assembly, { ...payload, documentSha256: "other" }),
     /快照/,
@@ -821,4 +940,139 @@ test("result mapping rejects the wrong native document, corrupted origins and un
   assert.throws(() => mapCompositionResults(assembly, unknown), /未知执行步骤/);
   assert.doesNotThrow(() => JSON.stringify(describeCaseComposition()));
   validateConfigurationSteps(assembly.document);
+});
+
+test("missing flow materials block the complete flow, retain independent cases and cannot hide invalid dependencies", async () => {
+  const definition = await sample();
+  const body = flow(definition);
+  const set = body.steps.find(
+    (step) => step.kind === "action" && step.operationId === "set",
+  ) as CompositionAction;
+  const check = body.steps.find(
+    (step) => step.kind === "action" && step.operationId === "assert",
+  ) as CompositionAction;
+  definition.fragments[0].parameters!.name.references = ["material"];
+  definition.fragments[0].parameters!.expectedName.references = ["material"];
+  const desktop = definition.nodes[0] as Extract<CompositionNode, { kind: "use" }>;
+  desktop.arguments!.name = { $material: "qa.missingName" };
+  desktop.arguments!.expectedName = { $material: "qa.missingName" };
+  const original = structuredClone(definition);
+  const assembly = await composeNativeCases(definition);
+  assert.deepEqual(assembly.diagnostics, []);
+  assert.deepEqual(
+    assembly.preflight!.map((c) => c.status),
+    ["blocked", "ready", "ready"],
+  );
+  assert.equal(assembly.caseIds.length, 3);
+  assert.equal(assembly.sourceMap.length, 3);
+  assert.ok(assembly.document!.cases[0].steps.length > 0);
+  const fixture = externalControls();
+  const result = await runConfigurationSteps(loaded(assembly.document!), fixture.env);
+  assert.deepEqual(
+    result.cases.map((c) => c.outcome),
+    ["blocked", "passed", "passed"],
+  );
+  assert.ok(!fixture.events.some((event) => event.includes("web-desktop")));
+  assert.equal(
+    mapCompositionResults(assembly, { ...result, documentSha256: assembly.documentSha256 }).length,
+    3,
+  );
+  assert.deepEqual(definition, original);
+  const invalidBlocked = structuredClone(assembly.document!);
+  invalidBlocked.cases[0].steps[0].op = "unsupported.action" as never;
+  assert.throws(() => validateConfigurationSteps(invalidBlocked), /未支持/);
+  set.operationId = "unsupported.action" as never;
+  const malformed = await composeNativeCases(definition);
+  assert.equal(malformed.document, undefined);
+  assert.equal(malformed.diagnostics[0].code, "unsupported-operation");
+  set.operationId = "set";
+  check.inputs.snapshot = { $output: ["mobile", "check", "read"] };
+  const crossCase = await composeNativeCases(definition);
+  assert.equal(crossCase.document, undefined);
+  assert.equal(crossCase.diagnostics[0].code, "dependency");
+});
+
+test("Catalog reference prerequisites remain per-case preflight records, including all-blocked and not-applicable scopes", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "pink-composition-preflight-"));
+  t.after(async () => {
+    assert.equal(dirname(root), tmpdir());
+    await rm(root, { recursive: true });
+  });
+  const catalog = JSON.parse(
+    await readFile(new URL("../../case-catalog/public-combinations.json", import.meta.url), "utf8"),
+  ) as CatalogDocument;
+  catalog.platforms = catalog.platforms.filter((p) => p.id === "web-desktop");
+  catalog.conditionalScenarios = [];
+  for (const combo of catalog.platforms[0].combinations) {
+    combo.values =
+      combo.template === "publish" ? { name: { $material: "qa.name" } } : { name: "qa_ready" };
+    combo.variants = [];
+    combo.fieldCoverage = {};
+    combo.configurationOrder = [];
+    combo.excludedFields = Object.keys(
+      catalog.templates.find((template) => template.id === combo.template)!.values,
+    );
+  }
+  const definition = createCaseComposition(catalog);
+  const references = ["publish", "debug", "mixed"].map((group) => {
+    const reference = definition.nodes.find(
+      (node) => node.kind === "case-ref" && node.caseId === `review.${group}.web-desktop`,
+    )!;
+    assert.ok(reference.kind === "case-ref");
+    reference.endpoint = "ui";
+    return reference;
+  });
+  const selection = { items: references.map((reference) => ({ path: [reference.id] })) };
+  delete references[0].endpoint;
+  const assembly = await composeNativeCases(definition, selection);
+  assert.deepEqual(assembly.diagnostics, []);
+  assert.deepEqual(
+    assembly.preflight!.map((c) => c.status),
+    ["blocked", "ready", "blocked"],
+  );
+  assert.ok(assembly.preflight![0].gaps.some((gap) => gap.kind === "material"));
+  assert.ok(assembly.preflight![2].gaps.some((gap) => gap.kind === "applicability"));
+  assert.ok(assembly.document!.cases[0].steps.some((step) => step.op === "build.submit"));
+  assert.equal(assembly.willSubmit, false);
+  const fixture = externalControls();
+  const result = await runConfigurationSteps(loaded(assembly.document!), fixture.env);
+  assert.deepEqual(
+    result.cases.map((c) => c.outcome),
+    ["blocked", "passed", "blocked"],
+  );
+  assert.equal(fixture.events.filter((event) => event.startsWith("open:")).length, 1);
+  assert.ok("groups" in result);
+  assert.deepEqual(
+    result.groups.map((group) => group.caseIds),
+    [[assembly.caseIds[1]]],
+  );
+  const allBlocked = await composeNativeCases(definition, {
+    items: [selection.items[0], selection.items[2]],
+  });
+  assert.deepEqual(allBlocked.diagnostics, []);
+  assert.ok(allBlocked.document);
+  assert.equal(allBlocked.willSubmit, false);
+  assert.equal(allBlocked.caseIds.length, 2);
+  assert.equal(allBlocked.sourceMap.length, 2);
+  const materials = join(root, "materials.json");
+  await writeFile(
+    materials,
+    JSON.stringify({ schemaVersion: 1, bindings: {}, mixedPlatforms: [] }),
+  );
+  const notApplicable = await composeNativeCases(
+    definition,
+    { items: [selection.items[2]] },
+    { materials },
+  );
+  assert.deepEqual(notApplicable.diagnostics, []);
+  assert.equal(notApplicable.preflight![0].status, "not-applicable");
+  const ignored = externalControls();
+  const na = await runConfigurationSteps(loaded(notApplicable.document!), ignored.env);
+  assert.equal(na.cases[0].outcome, "not-applicable");
+  assert.deepEqual(ignored.events, []);
+  const badOverride = await composeNativeCases(definition, {
+    items: [{ ...selection.items[0], expectedValues: { name: false } }],
+  });
+  assert.equal(badOverride.document, undefined);
+  assert.ok(badOverride.diagnostics.length);
 });

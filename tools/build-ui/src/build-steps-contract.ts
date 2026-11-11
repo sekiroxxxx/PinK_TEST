@@ -11,7 +11,12 @@ import { platformCatalog } from "./platform-catalog.js";
 import type { StageExpected } from "./configuration-stages.js";
 import type { InitialChecks } from "./configuration-input-actions.js";
 import { stepOperations, stepAssertions } from "./step-operation-capabilities.js";
-import type { BuilderTarget, BuilderHomeExpected } from "./builder-checks.js";
+import { validateCasePrecondition, type CasePrecondition } from "./step-preflight.js";
+import {
+  normalizeBuilderTarget,
+  type BuilderTarget,
+  type BuilderHomeExpected,
+} from "./builder-checks.js";
 
 export type BuildStep =
   | { id: string; op: "builder.open" | "builder.home" }
@@ -102,6 +107,9 @@ export type BuildStep =
     };
 export interface BuildStepCase {
   caseId: string;
+  title?: string;
+  group?: string;
+  precondition?: CasePrecondition;
   platform?: string;
   target?: BuilderTarget;
   onFailure?: "continue" | "stop";
@@ -150,7 +158,7 @@ export function validateBuildSteps(
     if (typeof v !== "string" || !/^[a-zA-Z0-9][\w.-]*$/.test(v)) error(at, "需要有效标识符");
     return v as string;
   };
-  const doc = obj(input, "document");
+  const doc = structuredClone(obj(input, "document"));
   keys(doc, ["kind", "schemaVersion", "cases", "targets"], "document");
   if (
     doc.kind !== "pink-configuration-steps" ||
@@ -165,23 +173,53 @@ export function validateBuildSteps(
   for (const [ci, raw] of (doc.cases as unknown[]).entries()) {
     const at = `cases[${ci}]`,
       c = obj(raw, at);
-    keys(c, ["caseId", "platform", "target", "onFailure", "steps", "finally"], at);
+    keys(
+      c,
+      [
+        "caseId",
+        "title",
+        "group",
+        "precondition",
+        "platform",
+        "target",
+        "onFailure",
+        "steps",
+        "finally",
+      ],
+      at,
+    );
     const caseId = id(c.caseId, at);
     if (caseIds.has(caseId)) error(at, "用例 caseId 重复");
     caseIds.add(caseId);
     if (c.onFailure !== undefined && !["continue", "stop"].includes(String(c.onFailure)))
       error(at, "onFailure 仅支持 continue/stop");
-    if (!Array.isArray(c.steps) || !c.steps.length || !Array.isArray(c.finally))
+    for (const field of ["title", "group"])
+      if (c[field] !== undefined && (typeof c[field] !== "string" || !c[field].trim()))
+        error(`${at}.${field}`, "需要非空展示文本");
+    if (c.precondition !== undefined)
+      try {
+        c.precondition = validateCasePrecondition(c.precondition);
+      } catch (cause) {
+        error(`${at}.precondition`, cause instanceof Error ? cause.message : "前提记录无效");
+      }
+    if (!Array.isArray(c.steps) || !Array.isArray(c.finally))
       error(at, "需要 steps 与 finally 数组");
+    if (!(c.steps as unknown[]).length && (!c.precondition || (c.finally as unknown[]).length))
+      error(at, "仅明确受阻或不适用的完整保留项允许空 steps/finally");
     if (c.target !== undefined) {
       if (c.platform !== undefined) error(at, "公共目标不能同时声明 platform");
-      const target = obj(c.target, `${at}.target`);
-      keys(target, ["kind", "category"], `${at}.target`);
+      try {
+        c.target = normalizeBuilderTarget(c.target);
+      } catch (cause) {
+        error(`${at}.target`, cause instanceof Error ? cause.message : "公共目标无效");
+      }
+      const target = c.target as BuilderTarget;
       if (
-        target.kind !== "builder" ||
-        !["X-Device", "X-Application"].includes(String(target.category))
+        !platformCatalog.some((p) => p.id === target.representativePlatform) &&
+        !targets.some((p) => p.id === target.representativePlatform)
       )
-        error(at, "公共目标仅支持 Builder 分类");
+        error(`${at}.target`, "公共目标代表平台须已适配或在 targets 中明确声明");
+      if (!(c.steps as unknown[]).length) continue;
       let page: string | undefined;
       const snapshots = new Set<string>();
       const ids = new Set<string>();
@@ -238,6 +276,7 @@ export function validateBuildSteps(
       continue;
     }
     id(c.platform, `${at}.platform`);
+    if (!(c.steps as unknown[]).length) continue;
     const probeOnly = (c.steps as unknown[]).every((step) => {
       const s = obj(step, at);
       return s.op === "platform.probe" || (s.op === "assert" && s.check === "probe");
@@ -904,7 +943,7 @@ export function validateBuildSteps(
       targets: doc.targets,
       cases: projections,
     });
-  return structuredClone(doc) as unknown as BuildStepsDocument;
+  return doc as unknown as BuildStepsDocument;
 }
 
 export function buildStepDependencies(c: BuildStepCase) {

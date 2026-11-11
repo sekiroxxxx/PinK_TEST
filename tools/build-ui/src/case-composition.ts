@@ -12,6 +12,9 @@ import { caseCompositionSchema, compositionSelectionSchema } from "./case-compos
 import { compositionTemplates } from "./case-composition-templates.js";
 import { catalogReferenceEntries, listNativeCaseReferences } from "./native-case-references.js";
 import { compileCatalogDefinition } from "./catalog-definition-steps.js";
+import { normalizeBuilderTarget, legacyBuilderRepresentatives } from "./builder-checks.js";
+import { loadStepInputs } from "./step-inputs.js";
+import { stepPreflight, type StepPreflightCase } from "./step-preflight.js";
 
 export type CompositionValue = unknown;
 export interface CompositionParameter {
@@ -55,6 +58,10 @@ export type CompositionNode =
       kind: "flow";
       target:
         | { kind: "platform"; id: CompositionValue }
+        | {
+            kind: "builder";
+            representativePlatform: CompositionValue;
+          }
         | {
             kind: "builder";
             category: CompositionValue;
@@ -135,6 +142,7 @@ export interface CaseAssembly {
   document?: BuildStepsDocument;
   caseIds: string[];
   willSubmit: boolean;
+  preflight?: StepPreflightCase[];
   sourceMap: CompositionOrigin[];
   diagnostics: CompositionDiagnostic[];
 }
@@ -397,9 +405,20 @@ function inspectFragmentDefinitions(
           throw new CompositionError("target", "操作链缺少受支持目标", path);
         keys(
           target,
-          target.kind === "platform" ? ["kind", "id"] : ["kind", "category"],
+          target.kind === "platform"
+            ? ["kind", "id"]
+            : ["kind", "representativePlatform", "category"],
           "flow.target",
         );
+        if (
+          target.kind === "builder" &&
+          Object.hasOwn(target, "representativePlatform") === Object.hasOwn(target, "category")
+        )
+          throw new CompositionError(
+            "target",
+            "公共目标须声明一个代表平台或旧分类，不能同时使用",
+            path,
+          );
         visitValue(target, parameters, path, ["target"]);
         scan(node.before ?? [], "actions", parameters, stack, path);
         scan(node.steps, "actions", parameters, stack, path);
@@ -537,6 +556,7 @@ async function assembleCaseComposition(
     selectionSha256: "",
     caseIds: [],
     willSubmit: false,
+    preflight: [],
     sourceMap: [],
     diagnostics: [],
   };
@@ -895,12 +915,41 @@ async function assembleCaseComposition(
                 endpoint: unit.node.endpoint,
               });
               const chosen = compilation.cases.find((c) => c.caseId === reference.caseId);
-              if (!chosen?.document)
+              if (!chosen) throw new CompositionError("case-missing", "Catalog 用例不存在");
+              if (chosen.gaps.some((gap) => gap.kind === "input-contract"))
                 throw new CompositionError(
-                  "case-blocked",
-                  chosen?.gaps.map((g) => g.reason).join("；") || "Catalog 用例没有完整执行定义",
+                  "native-contract",
+                  chosen.gaps
+                    .filter((gap) => gap.kind === "input-contract")
+                    .map((gap) => gap.reason)
+                    .join("；"),
                 );
-              native = structuredClone(chosen.document.cases[0]);
+              if (chosen.document) native = structuredClone(chosen.document.cases[0]);
+              else {
+                const symbolic = chosen.gaps.some((gap) => gap.kind === "ui-adapter")
+                  ? undefined
+                  : await compileCatalogDefinition(catalog, reference.caseId, reference.endpoint);
+                if (symbolic?.document) native = structuredClone(symbolic.document.cases[0]);
+                else {
+                  if (
+                    Object.keys(values).length ||
+                    Object.keys(expected).length ||
+                    Object.keys({ ...unit.node.stepInputs, ...item.stepInputs }).length
+                  )
+                    throw new CompositionError(
+                      "override-unavailable",
+                      "无完整操作链的受阻保留项不能覆盖操作输入或预期",
+                      unit.path,
+                    );
+                  native = { caseId, platform: entry.platform, steps: [], finally: [] };
+                }
+                native.precondition = {
+                  status: chosen.status === "not-applicable" ? "not-applicable" : "blocked",
+                  gaps: structuredClone(chosen.gaps),
+                };
+              }
+              native.title = chosen.title;
+              native.group = chosen.group;
             }
           }
           for (const [field, value] of Object.entries({ ...values, ...expected })) {
@@ -955,13 +1004,16 @@ async function assembleCaseComposition(
           const target = bind(flow.target, parameters, unit.scope, ["target"], unit.path) as {
             kind: string;
             id?: string;
-            category?: "X-Device" | "X-Application";
+            representativePlatform?: string;
+            category?: string;
           };
           if (!target || !["platform", "builder"].includes(target.kind))
             throw new CompositionError("target", "操作链缺少受支持目标");
           keys(
             target,
-            target.kind === "platform" ? ["kind", "id"] : ["kind", "category"],
+            target.kind === "platform"
+              ? ["kind", "id"]
+              : ["kind", "representativePlatform", "category"],
             "flow.target",
           );
           const cleanup: ActionInstance[][] = [];
@@ -1042,7 +1094,7 @@ async function assembleCaseComposition(
             caseId,
             ...(target.kind === "platform"
               ? { platform: target.id }
-              : { target: { kind: "builder", category: target.category! } }),
+              : { target: normalizeBuilderTarget(target) }),
             onFailure: flow.onFailure,
             steps: [],
             finally: [],
@@ -1192,12 +1244,20 @@ async function assembleCaseComposition(
       }
     }
     if (!result.diagnostics.length && (!authoring || cases.length)) {
-      const document = validateConfigurationSteps({
+      let document = validateConfigurationSteps({
         kind: "pink-configuration-steps",
         schemaVersion: 2,
         ...(targets.size ? { targets: [...targets.values()] } : {}),
         cases,
       }) as BuildStepsDocument;
+      const inputs = authoring ? undefined : await loadStepInputs(document, options);
+      result.preflight = stepPreflight(document, inputs?.preview);
+      for (const c of document.cases) {
+        const condition = result.preflight.find((row) => row.caseId === c.caseId)!;
+        if (condition.status !== "ready")
+          c.precondition = { status: condition.status, gaps: condition.gaps };
+      }
+      document = validateConfigurationSteps(document) as BuildStepsDocument;
       result.document = document;
       result.documentSha256 = valueHash(document);
       result.mappingSha256 = valueHash({
@@ -1205,9 +1265,12 @@ async function assembleCaseComposition(
         definitionSha256: result.definitionSha256,
         selectionSha256: result.selectionSha256,
         sourceMap: result.sourceMap,
+        preflight: result.preflight,
       });
       result.caseIds = document.cases.map((c) => c.caseId);
-      result.willSubmit = document.cases.some((c) => c.steps.some((s) => s.op === "build.submit"));
+      result.willSubmit = document.cases.some(
+        (c) => !c.precondition && c.steps.some((s) => s.op === "build.submit"),
+      );
     }
     if (authoring)
       for (const fragment of fragments.values())
@@ -1223,6 +1286,7 @@ async function assembleCaseComposition(
   if (result.diagnostics.length) {
     result.sourceMap = [];
     result.caseIds = [];
+    result.preflight = [];
   }
   return result;
 }
@@ -1241,6 +1305,7 @@ export function mapCompositionResults(assembly: CaseAssembly, result: unknown) {
         definitionSha256: assembly.definitionSha256,
         selectionSha256: assembly.selectionSha256,
         sourceMap: assembly.sourceMap,
+        ...(assembly.preflight ? { preflight: assembly.preflight } : {}),
       }) ||
     raw.kind !== "pink-configuration-steps-result" ||
     raw.schemaVersion !== 2
@@ -1396,7 +1461,15 @@ export function describeCaseComposition() {
     },
     targets: [
       { kind: "platform", required: ["id"] },
-      { kind: "builder", required: ["category"], categories: ["X-Device", "X-Application"] },
+      {
+        kind: "builder",
+        required: ["representativePlatform"],
+        legacy: {
+          field: "category",
+          representatives: legacyBuilderRepresentatives,
+          exclusive: true,
+        },
+      },
     ],
     publicUi: {
       supported: ["builder.open", "builder.read", "assert/builder-state", "builder.home"],
@@ -1411,11 +1484,20 @@ export function describeCaseComposition() {
     },
     execution:
       "assembled native v2 document runs as a whole through existing --file and --expected-plan",
+    preflight: {
+      field: "preflight",
+      caseField: "precondition",
+      statuses: ["ready", "blocked", "not-applicable"],
+      scope: "whole case; independent cases remain selected; no partial-flow execution",
+      allBlocked: "report-only; no PinK connection",
+      crossCaseOutputs: "unsupported definition dependency",
+    },
     failure:
-      "errors omit executable document; no implicit build, missing assertion removal or invented platform",
+      "definition errors omit executable document; prerequisites retain blocked cases; no implicit build, missing assertion removal or invented platform",
     hashes: {
       documentSha256: "result.documentSha256; native parsed document",
-      mappingSha256: "sourceMap, document, definition and selection identities",
+      mappingSha256:
+        "sourceMap, preflight when present, document, definition and selection identities",
     },
     sourceMap: {
       case: ["caseId", "nodeId", "instanceId", "instancePath", "sourceId?", "sourceCaseId?"],

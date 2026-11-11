@@ -24,6 +24,7 @@ const action = object({
 const target = {
   oneOf: [
     object({ kind: { const: "platform" }, id: {} }),
+    object({ kind: { const: "builder" }, representativePlatform: {} }),
     object({ kind: { const: "builder" }, category: {} }),
   ],
 };

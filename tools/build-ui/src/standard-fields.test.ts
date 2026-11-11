@@ -364,11 +364,20 @@ test("public Builder observations read actual controls and distinguish hidden, d
   f.root.add(new ElementFixture("BUTTON", {}, "查看构建记录"));
   const build = f.root.add(new ElementFixture("BUTTON", {}, "全部构建"));
   build.disabled = true;
-  const read = () => ({ category: "X-Device" as const, ...readBuilderHome(f.doc) });
+  const read = () => ({
+    representativePlatform: "web-desktop",
+    entryKey: "fixture-builder-native",
+    ...readBuilderHome(f.doc),
+  });
   const home = read();
   assert.equal(home.ready, true);
   assert.deepEqual(home.buttons["build-all"], { visible: true, disabled: true, matchCount: 1 });
   assertBuilderHome(home, read(), { buttons: { "build-all": { visible: true, disabled: true } } });
+  assert.throws(
+    () => assertBuilderHome(home, { ...read(), entryKey: "another-entry" }, { ready: true }),
+    (error: unknown) =>
+      error instanceof ConfigurationOperationError && error.disposition === "stop",
+  );
   assert.throws(
     () => assertBuilderHome(home, read(), { buttons: { "build-all": { disabled: false } } }),
     (error: unknown) =>

@@ -1,7 +1,7 @@
 import type { Page } from "playwright-core";
 import { Cdp } from "./cdp.js";
 import { randomUUID } from "node:crypto";
-import { readHistory, type HistoryView } from "./history-page.js";
+import { readHistory, readTaskBatch, readSuccessCard, type HistoryView } from "./history-page.js";
 import { readForm, type FormView } from "./configuration-page.js";
 import {
   errorMessage,
@@ -31,6 +31,11 @@ import {
 
 interface Probe {
   owner: string;
+  configurationGeneration: number;
+  observeEngineModules?: boolean;
+  lastResponseSequence?: number;
+  engineModulesAfter?: number;
+  engineModules?: { generation: number; sequence: number; options: Record<string, string> };
   lastTaskRequestSequence?: number;
   openpaasGames?: OpenpaasGame[];
   snapshots: TaskSnapshot[];
@@ -65,9 +70,19 @@ export class Builder {
   private readonly probeOwner = randomUUID();
   private configurationGenerationValue = 0;
   private probeAttempted = false;
+  private probeDocument?: number;
+  private probePhase = "not-installed";
   private readiness?: ConfigurationReadiness;
   private expectedConfigurationTitle?: string;
   private revealedBatchLabel?: string;
+  private readonly historyPlatformTitles = new Map<string, string>();
+  private lastCardEvidence?: {
+    platform: string;
+    batchLabel?: string;
+    expectedTitle: string;
+    matches: number;
+    status?: string;
+  };
   private fingerprintKeys = new Set<string>();
 
   get configurationGeneration(): number {
@@ -146,34 +161,81 @@ export class Builder {
     );
     const cdp = await Cdp.connect(target.target.webSocketDebuggerUrl);
     try {
-      await waitFor(
-        "Builder 内部 UI 容器加载",
-        () =>
-          cdp.evaluate(() => {
-            const frame = document.querySelector<HTMLIFrameElement>("#active-frame");
-            const content = frame?.contentDocument;
-            if (!content) return undefined;
-            return Array.from(content.querySelectorAll<HTMLButtonElement>("button")).some(
-              (button) =>
-                button.getClientRects().length > 0 &&
-                [
-                  "查看构建记录",
-                  "编译与打包结果",
-                  "View build history",
-                  "Build & Package Results",
-                ].includes(button.innerText.trim()),
-            )
-              ? true
-              : undefined;
-          }),
-        60_000,
-        signal,
-      );
-      return new Builder(page, cdp, target.name, cleanupSignal, configurationTimeoutMs);
+      const builder = new Builder(page, cdp, target.name, cleanupSignal, configurationTimeoutMs);
+      await builder.waitForReady("open", signal);
+      return builder;
     } catch (error) {
       cdp.close();
       throw error;
     }
+  }
+
+  private frameState() {
+    return this.cdp.evaluate(() => {
+      const active = document.querySelectorAll<HTMLIFrameElement>("#active-frame");
+      const pending = document.querySelectorAll<HTMLIFrameElement>("#pending-frame");
+      const content = active[0]?.contentDocument;
+      return {
+        activeFrames: active.length,
+        pendingFrames: pending.length,
+        readyState: content?.readyState,
+        uiReady: Boolean(
+          content &&
+          Array.from(content.querySelectorAll<HTMLButtonElement>("button")).some(
+            (button) =>
+              button.getClientRects().length > 0 &&
+              [
+                "查看构建记录",
+                "编译与打包结果",
+                "View build history",
+                "Build & Package Results",
+              ].includes(button.innerText.trim()),
+          ),
+        ),
+      };
+    });
+  }
+
+  /** Reuse after activation: a still-visible old document is not ready while its replacement loads. */
+  async waitForReady(phase: string, signal = this.signal): Promise<void> {
+    let frame: Awaited<ReturnType<Builder["frameState"]>> | undefined;
+    try {
+      await waitFor(
+        "Builder 内部 UI 容器加载",
+        async () => {
+          const host = this.page.locator(`iframe[name="${this.hostName}"]`);
+          const count = await host.count();
+          if (count > 1) throw new Error("目标 Builder Webview 不唯一");
+          if (!count || !(await host.isVisible())) return undefined;
+          frame = await this.frameState();
+          if (frame.activeFrames > 1 || frame.pendingFrames > 1)
+            throw new Error("Builder 内容 Frame 不唯一");
+          return frame.activeFrames === 1 &&
+            frame.pendingFrames === 0 &&
+            frame.readyState === "complete" &&
+            frame.uiReady
+            ? true
+            : undefined;
+        },
+        60_000,
+        signal,
+      );
+    } catch (cause) {
+      if (signal.aborted) throw cause;
+      throw new ConfigurationOperationError(
+        "context",
+        "Builder 内容页面未就绪，未安装或重建观察器",
+        "stop",
+        {
+          cause,
+          diagnostic: {
+            phase: "builder-readiness",
+            observations: { hostName: this.hostName, phase, frame },
+          },
+        },
+      );
+    }
+    if (this.probeAttempted) await this.checkProbe(`${phase}.ready`);
   }
 
   private async point(
@@ -398,6 +460,9 @@ export class Builder {
     observeOpenpaas = false,
     caseKeys: string[] = [],
   ): Promise<void> {
+    this.probePhase = "install";
+    await this.waitForReady("probe.install");
+    this.probeDocument = await this.cdp.contentDocumentNode();
     this.fingerprintKeys = new Set(
       specialFields.filter((field) => field.fingerprint).map((field) => field.key),
     );
@@ -407,10 +472,17 @@ export class Builder {
       observeOpenpaas: boolean,
       caseKeys: string[],
       owner: string,
+      generation: number,
     ) => {
       const window = document.defaultView as ProbeWindow;
       if (window.__pinkBuildUiProbe) throw new Error("该 Builder 已有工具观察器，请先结束原运行");
-      const probe: Probe = { owner, snapshots: [], observations: {}, listener: () => {} };
+      const probe: Probe = {
+        owner,
+        configurationGeneration: generation,
+        snapshots: [],
+        observations: {},
+        listener: () => {},
+      };
       probe.listener = (event) => {
         const message = event.data as {
           source?: string;
@@ -419,6 +491,65 @@ export class Builder {
           ok?: boolean;
           result?: unknown;
         };
+        const responseId = typeof message?.id === "string" && /^webview:(\d+)$/.exec(message.id);
+        const sequence = responseId ? Number(responseId[1]) : undefined;
+        if (
+          message?.source === "host" &&
+          message.kind === "response" &&
+          sequence !== undefined &&
+          Number.isSafeInteger(sequence)
+        )
+          probe.lastResponseSequence = Math.max(probe.lastResponseSequence ?? -1, sequence);
+        // Capture only the reviewed getEngineModules response shape, never the full host result.
+        if (
+          probe.observeEngineModules &&
+          message?.source === "host" &&
+          message.kind === "response" &&
+          message.ok === true &&
+          sequence !== undefined &&
+          Number.isSafeInteger(sequence) &&
+          sequence > (probe.engineModulesAfter ?? -1) &&
+          sequence > (probe.engineModules?.sequence ?? -1)
+        ) {
+          const result = message.result as {
+            physics?: { options?: Record<string, { label?: unknown }> };
+            physics2d?: unknown;
+            gfxWebgl2?: unknown;
+            nativeCodeModules?: unknown;
+          } | null;
+          if (
+            result &&
+            typeof result === "object" &&
+            !Array.isArray(result) &&
+            Object.hasOwn(result, "physics2d") &&
+            Object.hasOwn(result, "gfxWebgl2") &&
+            Array.isArray(result.nativeCodeModules) &&
+            result.nativeCodeModules.every((id) => typeof id === "string")
+          ) {
+            const options = result.physics?.options;
+            if (
+              options &&
+              typeof options === "object" &&
+              !Array.isArray(options) &&
+              Object.keys(options).length &&
+              Object.entries(options).every(
+                ([id, option]) =>
+                  id.length > 0 &&
+                  option &&
+                  typeof option === "object" &&
+                  typeof option.label === "string" &&
+                  option.label.trim().length > 0,
+              )
+            )
+              probe.engineModules = {
+                generation: probe.configurationGeneration,
+                sequence,
+                options: Object.fromEntries(
+                  Object.entries(options).map(([id, option]) => [id, option.label as string]),
+                ),
+              };
+          }
+        }
         if (
           observeOpenpaas &&
           message?.source === "host" &&
@@ -605,7 +736,141 @@ export class Builder {
       window.addEventListener("message", probe.listener);
     };
     this.probeAttempted = true;
-    await this.cdp.dom(install, specialFields, observeOpenpaas, caseKeys, this.probeOwner);
+    await this.cdp.dom(
+      install,
+      specialFields,
+      observeOpenpaas,
+      caseKeys,
+      this.probeOwner,
+      this.configurationGeneration,
+    );
+    await this.checkProbe("installed");
+  }
+
+  /** Prepare passive metadata capture before opening a configuration; no task baseline or RPC. */
+  async observeEngineModules(): Promise<void> {
+    if (!this.probeAttempted) await this.installProbe();
+    await this.checkProbe("engine-modules.prepare");
+    await this.cdp.dom((document, owner) => {
+      const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
+      if (!probe || probe.owner !== owner) throw new Error("候选观察器归属失效");
+      probe.observeEngineModules = true;
+    }, this.probeOwner);
+  }
+
+  private async beginConfigurationObservation() {
+    this.configurationGenerationValue++;
+    if (!this.probeAttempted) return;
+    await this.checkProbe("configuration.open");
+    await this.cdp.dom(
+      (document, owner, generation) => {
+        const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
+        if (!probe || probe.owner !== owner) throw new Error("候选观察器归属失效");
+        probe.configurationGeneration = generation;
+        probe.engineModulesAfter = probe.lastResponseSequence;
+        delete probe.engineModules;
+      },
+      this.probeOwner,
+      this.configurationGeneration,
+    );
+  }
+
+  async enginePhysicsOptions(): Promise<Record<string, string>> {
+    await this.checkProbe("engine-modules.read");
+    try {
+      return await waitFor(
+        "当前配置页的 3D 物理候选元数据",
+        async () => {
+          const observed = await this.cdp.dom(
+            (document, owner, generation) => {
+              const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
+              if (!probe || probe.owner !== owner || probe.configurationGeneration !== generation)
+                return { invalid: true as const };
+              return {
+                options:
+                  probe.engineModules?.generation === generation
+                    ? probe.engineModules.options
+                    : undefined,
+              };
+            },
+            this.probeOwner,
+            this.configurationGeneration,
+          );
+          if ("invalid" in observed)
+            throw new ConfigurationOperationError("context", "候选元数据不属于当前配置页", "stop");
+          return observed.options;
+        },
+        15_000,
+        this.signal,
+      );
+    } catch (cause) {
+      if (this.signal.aborted || cause instanceof ConfigurationOperationError) throw cause;
+      throw new ConfigurationOperationError(
+        "precondition",
+        "未观察到当前配置页的 3D 物理候选元数据",
+        "blocked",
+        {
+          cause,
+          diagnostic: {
+            phase: "engine-modules.metadata",
+            observations: {
+              field: "overwriteProjectSettings.includeModules.physics",
+              generation: this.configurationGeneration,
+            },
+          },
+        },
+      );
+    }
+  }
+
+  async probeEvidence() {
+    const errors: Array<{ phase: string; reason: string }> = [];
+    const unavailable = (phase: string, error: unknown) => {
+      errors.push({ phase, reason: error instanceof Error ? error.message : "观察器现场不可用" });
+      return undefined;
+    };
+    const document = await this.cdp
+      .contentDocumentNode()
+      .catch((error: unknown) => unavailable("document", error));
+    const frame = await this.frameState().catch((error: unknown) => unavailable("frame", error));
+    const state = await this.cdp
+      .dom((document) => {
+        const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
+        return { owner: probe?.owner, readyState: document.readyState };
+      })
+      .catch((error: unknown) => unavailable("probe", error));
+    return {
+      hostName: this.hostName,
+      phase: this.probePhase,
+      installedDocument: this.probeDocument,
+      currentDocument: document,
+      frame,
+      documentChanged:
+        document !== undefined && this.probeDocument !== undefined
+          ? document !== this.probeDocument
+          : undefined,
+      expectedOwner: this.probeOwner,
+      currentOwner: state?.owner,
+      readyState: state?.readyState,
+      errors,
+    };
+  }
+
+  private async checkProbe(phase: string) {
+    this.probePhase = phase;
+    const evidence = await this.probeEvidence();
+    if (
+      evidence.currentDocument !== this.probeDocument ||
+      evidence.currentOwner !== this.probeOwner ||
+      evidence.frame?.activeFrames !== 1 ||
+      evidence.frame.pendingFrames !== 0
+    )
+      throw new ConfigurationOperationError(
+        "task",
+        `任务观察器归属失效（${phase}；文档 ${evidence.installedDocument ?? "未知"} → ${evidence.currentDocument ?? "不可用"}；监听${evidence.currentOwner === this.probeOwner ? "存在" : evidence.currentOwner ? "归属不符" : "缺失"}；待切换 Frame ${evidence.frame?.pendingFrames ?? "未知"}），停止后续提交`,
+        "stop",
+        { diagnostic: { phase: "task-observer", observations: evidence } },
+      );
   }
 
   async snapshots(): Promise<TaskSnapshot[]> {
@@ -618,13 +883,23 @@ export class Builder {
   }
 
   async latestSnapshot(since?: number): Promise<TaskSnapshot | undefined> {
-    const snapshot = await this.cdp.dom((document, since) => {
-      const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
-      if (!probe) throw new Error("任务观察器丢失，停止后续提交");
-      const latest = probe.snapshots.at(-1);
-      return latest && (since === undefined || latest.at >= since) ? latest : undefined;
-    }, since);
-    return snapshot ? this.fingerprintSnapshot(snapshot) : undefined;
+    const snapshot = await this.cdp.dom(
+      (document, since, owner) => {
+        const probe = (document.defaultView as ProbeWindow).__pinkBuildUiProbe;
+        if (!probe || probe.owner !== owner) return { lost: true as const };
+        const latest = probe.snapshots.at(-1);
+        return {
+          latest: latest && (since === undefined || latest.at >= since) ? latest : undefined,
+        };
+      },
+      since,
+      this.probeOwner,
+    );
+    if ("lost" in snapshot) {
+      await this.checkProbe(this.probePhase);
+      throw new Error("任务观察器在读取时失效，停止后续提交");
+    }
+    return snapshot.latest ? this.fingerprintSnapshot(snapshot.latest) : undefined;
   }
 
   private fingerprintSnapshot(snapshot: TaskSnapshot): TaskSnapshot {
@@ -659,17 +934,25 @@ export class Builder {
     )
       throw new Error("配置弹窗正在打开；历史只读检查不会关闭或保存用户配置，请先正常关闭弹窗");
     // The real history page mounts and requests its own tasks; the observer only reads responses.
-    await this.home();
-    const openedAt = await this.click("button", "查看构建记录");
+    await this.checkProbe("history.before-home");
+    await this.home(() => this.checkProbe("history.before-home-input"));
+    await this.checkProbe("history.before-open");
+    const openedAt = await this.click("button", "查看构建记录", undefined, undefined, () =>
+      this.checkProbe("history.before-open-input"),
+    );
+    await this.checkProbe("history.after-open");
     return waitFor("历史页面的任务基线", () => this.latestSnapshot(openedAt), 30_000, this.signal);
   }
 
   async baseline(readOnly = false): Promise<Task[]> {
+    this.probePhase = "baseline.history";
     const snapshot = await this.historySnapshot(readOnly);
     if (snapshot.tasks.some((task) => ["waiting", "processing"].includes(task.state))) {
       throw new Error("当前存在活动构建任务，本轮不混入既有队列");
     }
+    this.probePhase = "baseline.return-home";
     await this.home();
+    await this.checkProbe("baseline.complete");
     return snapshot.tasks;
   }
 
@@ -679,17 +962,22 @@ export class Builder {
     onState?: (state: ConfigurationReadiness["states"][number]) => void,
   ): Promise<Configuration> {
     await this.home();
-    this.configurationGenerationValue++;
+    await this.beginConfigurationObservation();
     this.expectedConfigurationTitle = platformEntry(
       platform?.id ?? "web-desktop",
     ).configurationTitle;
     const openedAt = await this.click("platform", platform?.label ?? "Web 桌面端");
-    return this.readConfiguration(fieldKeys, openedAt, onState);
+    const configuration = await this.readConfiguration(fieldKeys, openedAt, onState);
+    this.bindHistoryPlatformTitle(
+      platform?.id ?? "web-desktop",
+      (await this.configurationIdentity()).title,
+    );
+    return configuration;
   }
 
   async openConfigurationPage(label: string, beforeInput?: () => Promise<void>): Promise<FormView> {
     await this.home(beforeInput);
-    this.configurationGenerationValue++;
+    await this.beginConfigurationObservation();
     await this.click("platform", label, undefined, undefined, beforeInput);
     return this.configurationPage();
   }
@@ -1483,42 +1771,47 @@ export class Builder {
     );
   }
 
+  bindHistoryPlatformTitle(platform: string, title: string): void {
+    if (!platform || !title.trim())
+      throw new ConfigurationOperationError("context", "缺少已核对的平台配置页标题", "stop");
+    this.historyPlatformTitles.set(platform, title.trim());
+  }
+
+  historyCardEvidence() {
+    return structuredClone(this.lastCardEvidence);
+  }
+
   async successText(outputName: string, platform: string): Promise<string | undefined> {
-    return this.cdp.dom(
-      (document, outputName, platform, batchLabel) => {
-        let scope: ParentNode = document;
-        if (batchLabel) {
-          const headers = [
-            ...document.querySelectorAll<HTMLButtonElement>("button.pk-batch-header"),
-          ].filter((header) => header.innerText.trim() === batchLabel);
-          if (headers.length !== 1) throw new Error("本次成功卡片的批次无法唯一对应");
-          scope = headers[0].closest('[data-slot="collapsible-section"]')!;
-        }
-        const cards = Array.from(scope.querySelectorAll<HTMLElement>(".pk-card-main")).filter(
-          (card) =>
-            Array.from(card.querySelectorAll<HTMLImageElement>("img.pk-card-icon")).some((icon) =>
-              icon.src.includes(`/platforms/${platform}/`),
-            ) &&
-            Array.from(card.querySelectorAll("span")).some((span) =>
-              span.textContent?.trim().endsWith(` - ${outputName}`),
-            ),
-        );
-        if (cards.length > 1) throw new Error("结果页存在同名任务卡片，无法唯一复核");
-        const text = cards[0]?.querySelector<HTMLElement>(".pk-card-status")?.innerText.trim();
-        return text === "成功" ? text : undefined;
-      },
+    this.lastCardEvidence = undefined;
+    const title = this.historyPlatformTitles.get(platform);
+    if (!title)
+      throw new ConfigurationOperationError("context", "结果卡片缺少本轮已核对的平台身份", "stop");
+    const observed = await this.cdp.dom(
+      readSuccessCard,
       outputName,
-      platform,
+      title,
       this.revealedBatchLabel,
     );
+    this.lastCardEvidence = {
+      platform,
+      batchLabel: this.revealedBatchLabel,
+      expectedTitle: `${title} - ${outputName}`,
+      ...observed,
+    };
+    return observed.status !== undefined &&
+      builderUiLabels("status", "成功").includes(observed.status)
+      ? observed.status
+      : undefined;
   }
 
   async showHistory(): Promise<void> {
-    const home = await this.cdp.dom((document) =>
-      Array.from(document.querySelectorAll<HTMLButtonElement>("button")).some(
-        (button) =>
-          button.getClientRects().length > 0 && button.innerText.trim() === "查看构建记录",
-      ),
+    const home = await this.cdp.dom(
+      (document, labels) =>
+        Array.from(document.querySelectorAll<HTMLButtonElement>("button")).some(
+          (button) =>
+            button.getClientRects().length > 0 && labels.includes(button.innerText.trim()),
+        ),
+      builderUiLabels("button", "查看构建记录"),
     );
     if (home) await this.click("button", "查看构建记录");
   }
@@ -1564,37 +1857,7 @@ export class Builder {
     if (at === undefined) throw new Error("本次任务缺少批次时间，无法复核 UI");
     const batch = await waitFor(
       "本次唯一记录批次",
-      async () =>
-        this.cdp.dom((document, at) => {
-          const date = new Date(at);
-          const month = `${date.getFullYear()}.${String(date.getMonth() + 1).padStart(2, "0")}`;
-          const day = date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
-          const time = [date.getHours(), date.getMinutes(), date.getSeconds()]
-            .map((part) => String(part).padStart(2, "0"))
-            .join(":");
-          const matches = Array.from(
-            document.querySelectorAll<HTMLButtonElement>("button.pk-batch-header"),
-          ).filter((button) => {
-            const monthHeader = button.closest('[data-slot="collapsible-section"]')?.parentElement
-              ?.parentElement?.firstElementChild;
-            const labels = Array.from(button.querySelectorAll("span")).map((span) =>
-              span.textContent?.trim(),
-            );
-            return (
-              monthHeader?.textContent?.trim().startsWith(month) &&
-              labels.includes(day) &&
-              labels.includes(time)
-            );
-          });
-          if (matches.length > 1) throw new Error("本次记录批次时间存在歧义，停止 UI 复核");
-          const button = matches[0];
-          return button
-            ? {
-                label: button.innerText.trim(),
-                expanded: button.getAttribute("aria-expanded") === "true",
-              }
-            : undefined;
-        }, at),
+      () => this.cdp.dom(readTaskBatch, at),
       15_000,
       this.signal,
     );
@@ -1687,6 +1950,16 @@ export class Builder {
             throw new Error("原下拉控件或受控弹层已失效");
           if (document.activeElement === control) return selector;
           if (list.contains(document.activeElement)) return listSelector;
+          const popup = list.closest<HTMLElement>('[data-slot="select-content"]');
+          if (
+            popup &&
+            popup.getClientRects().length &&
+            popup.querySelectorAll('[role="listbox"]').length === 1 &&
+            popup.contains(document.activeElement)
+          ) {
+            const popupSelector = `[data-slot="select-content"]:has(${listSelector})`;
+            if (document.querySelectorAll(popupSelector).length === 1) return popupSelector;
+          }
           throw new Error("键盘焦点不属于原下拉控件或受控弹层");
         },
         selector,

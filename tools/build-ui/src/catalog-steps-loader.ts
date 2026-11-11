@@ -6,7 +6,7 @@ import type { LoadedConfigurationSteps } from "./configuration-steps-contract.js
 import type { BuildStepsDocument } from "./build-steps-contract.js";
 import { contentHash, valueHash } from "./plan-integrity.js";
 import { ConfigurationOperationError } from "./configuration-context.js";
-import type { ConfigurationStepCaseResult } from "./configuration-steps.js";
+export { selectedStepResults as catalogStepResults } from "./step-preflight.js";
 
 /** Catalog and hand-authored steps converge here, before the existing launch/plan/execution code. */
 export async function loadCatalogSteps(
@@ -67,37 +67,4 @@ export async function loadCatalogSteps(
       }
     },
   };
-}
-
-/** Keep blockers in their selected order without ever executing an incomplete draft. */
-export function catalogStepResults(
-  loaded: LoadedConfigurationSteps,
-  executed: ConfigurationStepCaseResult[],
-): ConfigurationStepCaseResult[] {
-  if (!loaded.catalog) return executed;
-  return loaded.catalog.cases.map(
-    (c) =>
-      executed.find((r) => r.caseId === c.caseId) ?? {
-        caseId: c.caseId,
-        platform: c.platform,
-        outcome:
-          c.status === "ready"
-            ? "skipped"
-            : c.status === "not-applicable"
-              ? "not-applicable"
-              : "blocked",
-        steps: [],
-        restoration: "not-required",
-        stopFollowingCases: false,
-        ...(c.status !== "ready"
-          ? {
-              failure: {
-                code: c.status === "not-applicable" ? "not-applicable" : "precondition",
-                reason: c.gaps.map((g) => `[${g.kind}] ${g.reason}`).join("；"),
-                disposition: "blocked" as const,
-              },
-            }
-          : {}),
-      },
-  );
 }

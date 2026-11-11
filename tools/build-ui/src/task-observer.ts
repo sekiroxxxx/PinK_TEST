@@ -1,6 +1,7 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { Builder } from "./builder.js";
-import { errorMessage, type Task, type TaskObservation, type TaskSnapshot } from "./common.js";
+import { type Task, type TaskObservation, type TaskSnapshot } from "./common.js";
+import { ConfigurationOperationError } from "./configuration-context.js";
 
 export function isTerminal(task: Task): boolean {
   return ["success", "failure", "cancelled", "generated"].includes(task.state);
@@ -49,7 +50,7 @@ export class TaskObserver {
   private snapshots: Array<TaskSnapshot | undefined> = [];
   private stopped = false;
   private runner?: Promise<void>;
-  private failure?: string;
+  private failure?: unknown;
 
   constructor(
     private readonly builders: Builder[],
@@ -64,11 +65,28 @@ export class TaskObserver {
   }
 
   assertHealthy(): void {
-    if (this.failure) throw new Error(`任务观察中断：${this.failure}`);
+    if (this.failure)
+      throw new ConfigurationOperationError("task", "任务观察中断，停止后续提交", "stop", {
+        cause: this.failure,
+      });
   }
 
   async poll(): Promise<void> {
-    const received = await Promise.all(this.builders.map((builder) => builder.latestSnapshot()));
+    const received = await Promise.all(
+      this.builders.map(async (builder, index) => {
+        try {
+          return await builder.latestSnapshot();
+        } catch (cause) {
+          throw new ConfigurationOperationError("task", `任务来源 ${index} 读取失败`, "stop", {
+            cause,
+            diagnostic: {
+              phase: "task-observer-poll",
+              observations: { source: index, platforms: this.platformsBySource[index] },
+            },
+          });
+        }
+      }),
+    );
     let changed = false;
     for (const [index, snapshot] of received.entries()) {
       const previous = this.snapshots[index];
@@ -119,7 +137,7 @@ export class TaskObserver {
           await this.poll();
           onUpdate();
         } catch (error) {
-          this.failure = errorMessage(error);
+          this.failure = error;
           return;
         }
         await delay(300);

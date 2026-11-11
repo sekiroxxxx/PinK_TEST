@@ -947,6 +947,12 @@ export class CaseForm {
         if (index < 0) throw new Error(`原生候选不存在：${key}`);
         await this.select(current.selector, index);
       }
+    } else if (
+      current.kind === "enum" &&
+      key === "overwriteProjectSettings.includeModules.physics" &&
+      target !== "inherit-project-setting"
+    ) {
+      await this.selectEnginePhysics(current, String(target));
     } else if (current.kind === "enum" && current.choices?.length) {
       const choice = current.choices.find((c) => c.value === String(target) && !c.disabled);
       if (!choice) throw new Error(`选项不可用：${key}`);
@@ -1069,5 +1075,174 @@ export class CaseForm {
       this.signal,
     );
     return !initiallyMatched || input !== undefined;
+  }
+
+  private async physicsCandidate(selector: string, value: string, label: string, listId?: string) {
+    return this.builder.caseDom(
+      (document, selector, value, label, expectedList) => {
+        const controls = document.querySelectorAll<HTMLElement>(selector);
+        const control = controls[0];
+        if (
+          controls.length !== 1 ||
+          control.getAttribute("role") !== "combobox" ||
+          control.closest("[data-option-key]")?.getAttribute("data-option-key") !==
+            "overwriteProjectSettings.includeModules.physics"
+        )
+          throw new Error("原 3D 物理控件归属失效");
+        const id = control.getAttribute("aria-controls");
+        const open = control.getAttribute("aria-expanded") === "true";
+        if (expectedList && id !== expectedList && (open || id !== null))
+          throw new Error("原 3D 物理候选列表已替换");
+        const lists = id ? document.querySelectorAll<HTMLElement>(`[id="${CSS.escape(id)}"]`) : [];
+        const list = lists[0];
+        if (lists.length > 1) throw new Error("3D 物理候选列表不唯一");
+        if (!open || !list || !list.getClientRects().length) return { id, open, ready: false };
+        if (list.getAttribute("role") !== "listbox") throw new Error("原 3D 物理候选容器类型不符");
+        const all = [...list.querySelectorAll<HTMLElement>('[role="option"]')].filter(
+          (el) => el.getClientRects().length > 0,
+        );
+        const candidates = all.filter((el) => {
+          const typed = el.getAttribute("data-pink-enum-value"),
+            raw = el.getAttribute("data-value");
+          return typed !== null || raw !== null
+            ? (typed === null || typed === JSON.stringify(value)) && (raw === null || raw === value)
+            : el.textContent?.trim() === label;
+        });
+        if (candidates.length > 1) throw new Error("3D 物理候选无法唯一对应机器值");
+        const choice = candidates[0];
+        const parts: string[] = [];
+        for (let node: Element | null = choice ?? null; node; node = node.parentElement) {
+          const siblings = node.parentElement
+            ? [...node.parentElement.children].filter((item) => item.tagName === node!.tagName)
+            : [node];
+          parts.unshift(`${node.tagName.toLowerCase()}:nth-of-type(${siblings.indexOf(node) + 1})`);
+        }
+        return {
+          id,
+          open,
+          ready: all.length > 0,
+          selector: choice ? parts.join(" > ") : undefined,
+          disabled:
+            choice?.getAttribute("aria-disabled") === "true" ||
+            choice?.hasAttribute("data-disabled"),
+          labels: all.map((el) => el.textContent?.trim() ?? ""),
+        };
+      },
+      selector,
+      value,
+      label,
+      listId,
+    );
+  }
+
+  private async selectEnginePhysics(current: CaseControl, target: string) {
+    const field = "overwriteProjectSettings.includeModules.physics";
+    const options = await this.builder.enginePhysicsOptions();
+    if (!Object.hasOwn(options, target))
+      throw new ConfigurationOperationError(
+        "precondition",
+        `SDK 3D 物理候选不包含机器值：${target}`,
+        "blocked",
+      );
+    const label = options[target];
+    let listId: string | undefined;
+    try {
+      await this.click("case-control", current.selector);
+      const candidate = await waitFor(
+        "原控件的 3D 物理候选列表",
+        async () => {
+          await this.beforeInput?.();
+          const view = await this.physicsCandidate(current.selector, target, label, listId);
+          if (view.id) listId ??= view.id;
+          return view.ready ? view : undefined;
+        },
+        15_000,
+        this.signal,
+      );
+      if (!candidate.selector || candidate.disabled)
+        throw new ConfigurationOperationError(
+          "precondition",
+          `3D 物理候选缺失或禁用：${target}`,
+          "blocked",
+          {
+            diagnostic: {
+              phase: "engine-modules.candidate",
+              observations: { field, target, label, listId, labels: candidate.labels },
+            },
+          },
+        );
+      await this.builder.click(
+        "case-control",
+        candidate.selector,
+        undefined,
+        undefined,
+        async () => {
+          await this.beforeInput?.();
+          if (!isDeepStrictEqual(options, await this.builder.enginePhysicsOptions()))
+            throw new Error("3D 物理候选元数据已变化");
+          const fresh = await this.physicsCandidate(current.selector, target, label, listId);
+          if (
+            fresh.selector !== candidate.selector ||
+            fresh.disabled ||
+            (await this.read(field)).value !== current.value
+          )
+            throw new Error("输入前 3D 物理候选或原值已变化");
+        },
+      );
+    } catch (cause) {
+      try {
+        await this.beforeInput?.();
+        const before = await this.read(field);
+        const view = await this.physicsCandidate(current.selector, target, label, listId);
+        listId ??= view.id ?? undefined;
+        if (view.open) {
+          if (!listId) throw new Error("无法确认原 3D 物理候选弹层");
+          await this.builder.caseDismissSelect(current.selector, listId, this.beforeInput);
+        }
+        await waitFor(
+          "3D 物理失败弹层关闭且值未变化",
+          async () => {
+            await this.beforeInput?.();
+            const state = await this.physicsCandidate(current.selector, target, label, listId);
+            const unchanged = isDeepStrictEqual((await this.read(field)).value, before.value);
+            if (!unchanged) throw new Error("关闭 3D 物理弹层改变了配置值");
+            const hidden =
+              !listId ||
+              (await this.builder.caseDom((document, id) => {
+                const list = document.getElementById(id);
+                return (
+                  !list ||
+                  !list.getClientRects().length ||
+                  document.defaultView!.getComputedStyle(list).visibility === "hidden"
+                );
+              }, listId));
+            return !state.open && hidden ? true : undefined;
+          },
+          3000,
+          this.signal,
+        );
+        if (!isDeepStrictEqual(before.value, current.value))
+          throw new Error("失败选择的送达或配置变化无法确认");
+      } catch (cleanupError) {
+        throw new ConfigurationOperationError(
+          "context",
+          "3D 物理候选选择失败且弹层无法安全收尾",
+          "stop",
+          {
+            cause,
+            diagnostic: {
+              phase: "engine-modules.dismiss",
+              observations: {
+                field,
+                target,
+                listId,
+                cleanupError: cleanupError instanceof Error ? cleanupError.message : "unknown",
+              },
+            },
+          },
+        );
+      }
+      throw cause;
+    }
   }
 }

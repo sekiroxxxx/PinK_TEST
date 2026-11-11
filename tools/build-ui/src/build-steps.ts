@@ -17,6 +17,7 @@ import {
 import { assertBuildTaskValues } from "./build-task-values.js";
 import { isTerminal, taskTimeout } from "./task-observer.js";
 import { buildStepGroups, buildStepScheduling } from "./build-step-scheduling.js";
+import { stepPreflight, scheduledStepCases } from "./step-preflight.js";
 import type { Configuration, Task } from "./common.js";
 import type { CaseValues } from "./finalized-cases.js";
 import type { SceneCandidate } from "./case-inputs.js";
@@ -105,12 +106,11 @@ export async function runBuildSteps(
   env: ConfigurationStepsEnvironment,
   inputs?: StepInputs,
 ) {
-  if (
-    document.cases.some((c) => c.steps.some((s) => s.op === "config.open")) &&
-    !env.closeConfiguration
-  )
+  const preflight = new Map(stepPreflight(document, inputs?.preview).map((c) => [c.caseId, c]));
+  const ready = document.cases.filter((c) => preflight.get(c.caseId)!.status === "ready");
+  if (ready.some((c) => c.steps.some((s) => s.op === "config.open")) && !env.closeConfiguration)
     throw new Error("v2 缺少配置页关闭适配");
-  const hasBuild = document.cases.some((c) => c.steps.some((s) => s.op === "build.submit"));
+  const hasBuild = ready.some((c) => c.steps.some((s) => s.op === "build.submit"));
   if (hasBuild && !env.build) throw new Error("v2 构建步骤缺少任务观察及 UI 提交适配");
   const cases: ConfigurationStepCaseResult[] = [];
   const owned = new Set<string>();
@@ -124,7 +124,7 @@ export async function runBuildSteps(
       taskIds: string[];
       queueCoverage: "observed" | "not-observed" | "not-applicable";
     }
-  > = buildStepGroups(document.cases).map((g) => ({
+  > = buildStepGroups(scheduledStepCases(document, [...preflight.values()])).map((g) => ({
     ...g,
     outcome: "skipped",
     taskIds: [],
@@ -183,6 +183,20 @@ export async function runBuildSteps(
           : "not-required",
         stopFollowingCases: false,
       };
+      const condition = preflight.get(c.caseId)!;
+      if (
+        condition.status === "not-applicable" ||
+        (condition.status === "blocked" && c.onFailure !== "stop")
+      ) {
+        result.lifecycle = "finished";
+        result.outcome = condition.status;
+        result.restoration = "not-required";
+        result.failure = {
+          code: condition.status === "not-applicable" ? "not-applicable" : "precondition",
+          reason: condition.gaps.map((g) => `[${g.kind}] ${g.reason}`).join("；"),
+          disposition: "blocked",
+        };
+      }
       cases.push(result);
       return [c.caseId, result] as const;
     }),
@@ -257,7 +271,9 @@ export async function runBuildSteps(
           ? "observed"
           : "not-observed";
     group.settledAt = Date.now();
-    group.outcome = members.every((c) => c.outcome === "passed") ? "passed" : "failed";
+    group.outcome = members.every((c) => c.outcome === "passed" || c.outcome === "not-applicable")
+      ? "passed"
+      : "failed";
     stopped ||= members.some((c) => c.stopFollowingCases);
     await progress();
   }
@@ -270,7 +286,11 @@ export async function runBuildSteps(
     buildAttempted: attempted,
     taskMayStillBeRunning: uncertain,
     stopped,
-    outcome: cases.every((c) => c.outcome === "passed") ? "passed" : "failed",
+    outcome:
+      cases.some((c) => c.outcome === "passed") &&
+      cases.every((c) => c.outcome === "passed" || c.outcome === "not-applicable")
+        ? "passed"
+        : "failed",
     execution: buildStepScheduling,
     groups,
     cases,
@@ -281,9 +301,21 @@ export async function runBuildSteps(
     result: ConfigurationStepCaseResult,
   ): AsyncGenerator<void, void> {
     const caseInputs = inputs?.case(c.caseId);
-    const inputBlockers =
-      caseInputs?.blockers ??
-      (stepNeedsInputs(c) ? ["步骤输入尚未绑定工程/材料，请通过加载入口准备"] : []);
+    const condition = preflight.get(c.caseId)!;
+    const inputBlockers = condition.gaps.length
+      ? condition.gaps.map((g) => `[${g.kind}] ${g.reason}`)
+      : (caseInputs?.blockers ??
+        (stepNeedsInputs(c) ? ["步骤输入尚未绑定工程/材料，请通过加载入口准备"] : []));
+    if (condition.status === "not-applicable") {
+      result.outcome = "not-applicable";
+      result.restoration = "not-required";
+      result.failure = {
+        code: "not-applicable",
+        reason: inputBlockers.join("；"),
+        disposition: "blocked",
+      };
+      return;
+    }
     if (inputBlockers.length) {
       result.outcome = "blocked";
       result.restoration = "not-required";
@@ -469,8 +501,15 @@ export async function runBuildSteps(
             if (!c.target || !env.builderUi || builderPage !== step.page)
               throw new ConfigurationOperationError("context", "公共页面引用无效", "stop");
             out.output = await env.builderUi.read(c.target);
-            if ((out.output as BuilderHomeObservation).category !== c.target.category)
-              throw new ConfigurationOperationError("context", "公共观察不属于声明的分类", "stop");
+            if (
+              (out.output as BuilderHomeObservation).representativePlatform !==
+              c.target.representativePlatform
+            )
+              throw new ConfigurationOperationError(
+                "context",
+                "公共观察不属于声明的代表平台",
+                "stop",
+              );
             builderSnapshots.set(step.id, out.output as BuilderHomeObservation);
             break;
           case "builder.home":

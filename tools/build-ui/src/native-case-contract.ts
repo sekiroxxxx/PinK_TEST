@@ -11,6 +11,11 @@ import type { BuildStepsDocument } from "./build-steps-contract.js";
 import type { StepInputOptions } from "./step-inputs.js";
 import { describeV1StepCapabilities } from "./step-operation-capabilities.js";
 import { describeCaseComposition } from "./case-composition.js";
+import { executorCapabilityVersion } from "./executor-identity.js";
+import { legacyBuilderRepresentatives } from "./builder-checks.js";
+export { getExecutorIdentity, verifyExecutorIdentity } from "./executor-identity.js";
+export type { ExecutorIdentity } from "./executor-identity.js";
+export type { CasePrecondition, StepPreflightCase } from "./step-preflight.js";
 export {
   createCaseComposition,
   composeNativeCases,
@@ -153,7 +158,7 @@ export function describeNativeCaseCapabilities() {
   return {
     kind: "pink-native-case-capabilities",
     schemaVersion: 1,
-    capabilityVersion: "2",
+    capabilityVersion: executorCapabilityVersion,
     runtimeVerified: false,
     composition: describeCaseComposition(),
     formats: [
@@ -184,6 +189,22 @@ export function describeNativeCaseCapabilities() {
     configurationEndpointArgument: "--endpoint ui",
     planNoBuildField: "steps.execution.willSubmit",
     planVerification: "--expected-plan",
+    preflight: {
+      planField: "steps.preflight",
+      statuses: ["ready", "blocked", "not-applicable"],
+      caseField: "precondition",
+      emptySteps: "explicit blocked/not-applicable records only; no execution",
+      definitionErrors: "no executable assembly",
+      prerequisites: "block whole case; preserve independent cases and onFailure policy",
+      allBlocked: "report only; no PinK connection or submission",
+      crossCaseOutputs: "unsupported dependency; definition error",
+    },
+    executorIdentity: {
+      exports: ["getExecutorIdentity", "verifyExecutorIdentity"],
+      planField: "executor",
+      requiredForNewPlans: true,
+      changePolicy: "reload host or restart entrypoint, then preview again; no in-process hot swap",
+    },
     template: {
       export: "configurationCheckDocument",
       inputs: ["caseId", "platform", "values", "targets?"],
@@ -193,8 +214,8 @@ export function describeNativeCaseCapabilities() {
     targetsSchema: { type: "array", items: configurationTargetSchema },
     targetDescription: {
       id: "case binding identity; does not assert the product internal platform ID",
-      required: ["id", "label", "configurationTitle", "category", "fields"],
-      categories: ["X-Device", "X-Application"],
+      required: ["id", "label", "configurationTitle", "fields"],
+      category: { optional: true, kind: "string", purpose: "display only; never used for routing" },
       scalarKinds: ["string", "number", "boolean"],
       mixedEnum: {
         kind: "scalar",
@@ -211,13 +232,19 @@ export function describeNativeCaseCapabilities() {
         },
       ],
       scope: { required: ["readyKeys"], optional: ["section"], absenceRequiresCompleteScope: true },
-      homeScope: { required: ["readyLabels"], absenceScope: "current-category-rendered-home-only" },
+      homeScope: { required: ["readyLabels"], absenceScope: "uniquely-matched-rendered-home-only" },
       families: {
         required: ["parent", "enabled", "children"],
         meaning: "existing parent/child recovery; no scripts or expressions",
       },
       sensitiveExtension:
         "unregistered secret fields are not supported; existing material adapters remain available",
+    },
+    builderTarget: {
+      kind: "builder",
+      required: ["representativePlatform"],
+      legacy: { field: "category", representatives: legacyBuilderRepresentatives, exclusive: true },
+      observationIdentity: ["representativePlatform", "entryKey"],
     },
     observations: {
       target: {

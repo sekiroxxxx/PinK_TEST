@@ -17,6 +17,7 @@ import { ExecutionContext } from "./configuration-context.js";
 import type { CatalogDocument } from "./case-contract.js";
 import { describeFieldCapabilities } from "./field-capabilities.js";
 import { loadConfigurationSteps } from "./configuration-steps-contract.js";
+import { composeNativeCases, createCaseComposition } from "./case-composition.js";
 import type { BuildStepsDocument } from "./build-steps-contract.js";
 
 const exec = promisify(execFile);
@@ -150,6 +151,8 @@ test("all-blocked catalog produces a report before any PinK connection and prese
     const data = JSON.parse(await readFile(join(result.directory, "result.json"), "utf8"));
     assert.equal(data.launch, undefined);
     assert.equal(data.evidenceKind, "offline-preflight");
+    assert.deepEqual(data.executor, plan.executor);
+    assert.equal(data.executorSha256, plan.executor.implementationSha256);
     assert.equal(data.buildAttempted, false);
     assert.equal(data.cases[0].outcome, "blocked");
     assert.equal(data.progress.kind, "pink-build-progress");
@@ -169,6 +172,76 @@ test("all-blocked catalog produces a report before any PinK connection and prese
     );
     const merged = catalogStepResults(loaded, []);
     assert.equal(merged[0].caseId, "review.mixed.web-desktop");
+  } finally {
+    await w.dispose();
+  }
+});
+
+test("all-blocked native and composed steps generate complete reports without acquiring a PinK connection", async () => {
+  const w = await fixture();
+  try {
+    w.publish.values = { name: { $material: "qa.missingName" } };
+    const definition = createCaseComposition(w.catalog);
+    const reference = definition.nodes.find(
+      (node) => node.kind === "case-ref" && node.caseId === "review.publish.web-desktop",
+    )!;
+    const assembly = await composeNativeCases(
+      definition,
+      { items: [{ path: [reference.id] }] },
+      { project: w.root },
+    );
+    assert.deepEqual(assembly.diagnostics, []);
+    assert.equal(assembly.willSubmit, false);
+    assert.equal(assembly.caseIds.length, 1);
+    const native = {
+      kind: "pink-configuration-steps",
+      schemaVersion: 2,
+      cases: [
+        {
+          caseId: "native.blocked",
+          platform: "web-desktop",
+          precondition: {
+            status: "blocked",
+            gaps: [{ kind: "material", reason: "missing fixture material" }],
+          },
+          steps: [],
+          finally: [],
+        },
+      ],
+    };
+    for (const [scope, document] of [
+      ["native", native],
+      ["composition", assembly.document],
+    ] as const) {
+      const file = join(w.root, `${scope}.json`);
+      await writeFile(file, JSON.stringify(document));
+      const loaded = await loadConfigurationSteps(file, { project: w.root });
+      const plan = await configurationStepsLaunchPlan(loaded, {
+        pink: w.root,
+        project: w.root,
+        port: 65534,
+        configurationTimeoutMs: 1000,
+        resultsRoot: join(w.root, scope),
+      });
+      assert.equal(plan.steps.execution.willSubmit, false);
+      assert.deepEqual(
+        plan.steps.preflight.map((c) => c.status),
+        ["blocked"],
+      );
+      const outcome = await runConfigurationStepsFromStartup(loaded, plan);
+      const result = JSON.parse(await readFile(join(outcome.directory, "result.json"), "utf8"));
+      assert.equal(result.evidenceKind, "offline-preflight");
+      assert.equal(result.launch, undefined);
+      assert.deepEqual(result.cleanup, []);
+      assert.equal(result.buildAttempted, false);
+      assert.equal(result.cases.length, 1);
+      assert.equal(result.cases[0].outcome, "blocked");
+      assert.equal(result.lifecycle, "finished");
+      assert.match(
+        await readFile(join(outcome.directory, "report.html"), "utf8"),
+        new RegExp(loaded.document.cases[0].caseId),
+      );
+    }
   } finally {
     await w.dispose();
   }

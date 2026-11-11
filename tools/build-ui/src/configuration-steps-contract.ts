@@ -12,6 +12,7 @@ import { configurationFamilies } from "./configuration-operations.js";
 import { platformCatalog } from "./platform-catalog.js";
 import { contentHash, valueHash } from "./plan-integrity.js";
 import { validateConfigurationTargets, type ConfigurationTarget } from "./configuration-targets.js";
+import { selectedStepCases, scheduledStepCases } from "./step-preflight.js";
 import { loadStepInputs, type StepInputs, type StepInputOptions } from "./step-inputs.js";
 import { stepObservationFields } from "./configuration-step-values.js";
 import { buildStepScheduling, buildStepGroups } from "./build-step-scheduling.js";
@@ -340,6 +341,8 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
     throw new Error("已加载用例被修改，请重新加载文件");
   if (loaded.inputs && loaded.inputs.preview.documentSha256 !== loaded.documentSha256)
     throw new Error("材料/场景绑定不属于当前步骤文件，请重新加载");
+  const preflight = selectedStepCases(loaded);
+  const readyIds = new Set(preflight.filter((c) => c.status === "ready").map((c) => c.caseId));
   const execution: { willSubmit: boolean } & Partial<
     typeof buildStepScheduling & {
       groups: ReturnType<typeof buildStepGroups>;
@@ -351,9 +354,11 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
     document.schemaVersion === 1
       ? { willSubmit: false }
       : {
-          willSubmit: document.cases.some((c) => c.steps.some((s) => s.op === "build.submit")),
+          willSubmit: document.cases.some(
+            (c) => readyIds.has(c.caseId) && c.steps.some((s) => s.op === "build.submit"),
+          ),
           ...buildStepScheduling,
-          groups: buildStepGroups(document.cases),
+          groups: buildStepGroups(scheduledStepCases(document, preflight)),
           associationTimeoutMs: 30_000,
           queueTimeoutMs: 1_800_000,
           buildTimeoutMs: 600_000,
@@ -366,6 +371,7 @@ export function configurationStepsPlan(loaded: LoadedConfigurationSteps) {
     runtimeVerified: false,
     buildSubmitted: false,
     execution,
+    preflight,
     sourceSha256: loaded.sourceSha256,
     documentSha256: loaded.documentSha256,
     ...(loaded.catalog ? { catalog: structuredClone(loaded.catalog) } : {}),
