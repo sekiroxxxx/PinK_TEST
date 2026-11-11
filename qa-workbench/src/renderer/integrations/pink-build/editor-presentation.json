@@ -1,0 +1,12 @@
+{
+  "sample.name.alert": {
+    "help": "选择需要检查的提示。修改预期后，请核对测试输入是否仍符合用例意图。",
+    "properties": {
+      "kind": {
+        "label": "匹配方式",
+        "choiceLabels": { "none": "不出现提示", "contains": "包含指定文字" }
+      },
+      "text": { "label": "提示包含文字" }
+    }
+  }
+}

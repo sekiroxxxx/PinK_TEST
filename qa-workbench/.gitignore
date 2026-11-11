@@ -1,0 +1,10 @@
+node_modules/
+dist/
+dist-electron/
+*.log
+.qa-dev-data/
+.qa-v1-verify/
+release/
+work/
+.DS_Store
+*.tsbuildinfo

@@ -1,0 +1,141 @@
+{
+  "version": 2,
+  "labels": {
+    "name": "名称",
+    "buildPath": "构建路径",
+    "outputName": "输出名称",
+    "startScene": "初始场景",
+    "scenes": "包含场景",
+    "debug": "调试模式",
+    "md5Cache": "MD5 缓存",
+    "md5CacheOptions.handleTemplateMd5Link": "处理模板 MD5 链接",
+    "mangleProperties": "混淆属性名",
+    "inlineEnum": "内联枚举",
+    "sourceMaps": "Source Map",
+    "experimentalEraseModules": "实验性模块裁剪",
+    "skipCompressTexture": "跳过纹理压缩",
+    "packAutoAtlas": "打包自动图集",
+    "useSplashScreen": "启动画面",
+    "bundleCommonChunk": "公共代码块",
+    "mainBundleCompressionType": "主包压缩方式",
+    "mainBundleIsRemote": "主包为远程包",
+    "server": "资源服务器地址",
+    "packages.web-mobile.orientation": "设备方向",
+    "packages.web-mobile.vConsole": "VConsole",
+    "packages.web-mobile.embedWebDebugger": "内嵌调试器",
+    "packages.web-mobile.webGPU": "WebGPU",
+    "packages.web-desktop.webGPU": "WebGPU",
+    "packages.web-desktop.resolution.width": "窗口宽度",
+    "packages.web-desktop.resolution.height": "窗口高度",
+    "engineModulesConfigKey": "引擎模块配置",
+    "nativeCodeBundleMode": "原生模块包装",
+    "wasmCompressionMode": "WASM 压缩方式",
+    "binGroupConfig.enable": "资源分组",
+    "binGroupConfig.threshold": "资源分组阈值",
+    "startSceneAssetBundle": "初始场景分包",
+    "packages.web-desktop.resolution.designWidth": "窗口宽度",
+    "packages.web-desktop.resolution.designHeight": "窗口高度",
+    "packages.web-desktop.useWebGPU": "WebGPU",
+    "packages.web-mobile.useWebGPU": "WebGPU",
+    "overwriteProjectSettings.includeModules.gfx-webgl2": "WebGL 2 模块",
+    "overwriteProjectSettings.includeModules.physics": "3D 物理模块",
+    "overwriteProjectSettings.includeModules.physics-2d": "2D 物理模块",
+    "overwriteProjectSettings.macroConfig.cleanupImageCache": "图像缓存清理"
+  },
+  "choiceLabels": {
+    "sourceMaps": {
+      "false": "关闭",
+      "true": "独立 Source Map",
+      "inline": "内联 Source Map"
+    },
+    "mainBundleCompressionType": {
+      "none": "不压缩",
+      "merge_dep": "合并依赖",
+      "merge_all_json": "合并 JSON",
+      "subpackage": "分包"
+    }
+  },
+  "dependencies": [
+    {
+      "target": "md5CacheOptions.handleTemplateMd5Link",
+      "field": "md5Cache",
+      "equals": true,
+      "message": "开启 MD5 缓存后可编辑；关闭时保留原值。"
+    },
+    {
+      "target": "server",
+      "field": "mainBundleIsRemote",
+      "equals": true,
+      "message": "主包设为远程包后可编辑；关闭时保留原值。"
+    }
+  ],
+  "sampleText": [
+    {
+      "key": "title",
+      "label": "用例名称"
+    },
+    {
+      "key": "condition",
+      "label": "前置条件"
+    },
+    {
+      "key": "input",
+      "label": "输入说明"
+    },
+    {
+      "key": "trigger",
+      "label": "操作"
+    },
+    {
+      "key": "prompt",
+      "label": "预期"
+    },
+    {
+      "key": "recovery",
+      "label": "恢复要求"
+    }
+  ],
+  "editableExecution": ["field-input", "parent-visibility"],
+  "alertOptions": [
+    {
+      "value": "none",
+      "label": "不出现提示"
+    },
+    {
+      "value": "contains",
+      "label": "包含指定文字"
+    }
+  ],
+  "newCombinationTemplates": ["publish", "debug", "mixed"],
+  "combinationHelp": "新增组合以所选基础组合为父项，写为执行器支持的配置变体；未覆盖字段继续继承父项。",
+  "sections": {
+    "common": "公共配置",
+    "platform": "平台专用配置",
+    "l10n": "扩展配置"
+  },
+  "configSections": [
+    {
+      "title": "公共配置 · 基础信息",
+      "fields": ["name", "buildPath", "outputName", "startScene", "scenes"],
+      "collapsed": true
+    },
+    {
+      "title": "公共配置 · 编译选项",
+      "fields": [
+        "debug",
+        "sourceMaps",
+        "md5Cache",
+        "md5CacheOptions.handleTemplateMd5Link",
+        "mangleProperties",
+        "inlineEnum",
+        "experimentalEraseModules"
+      ],
+      "collapsed": false
+    },
+    {
+      "title": "公共配置 · 资源与模块",
+      "fields": [],
+      "collapsed": true
+    }
+  ]
+}

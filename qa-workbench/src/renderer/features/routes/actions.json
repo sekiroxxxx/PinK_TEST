@@ -1,0 +1,72 @@
+[
+  {
+    "id": "manual",
+    "label": "人工操作",
+    "summary": "{instruction}",
+    "fields": [
+      {
+        "key": "instruction",
+        "label": "怎么操作",
+        "type": "textarea",
+        "required": true
+      }
+    ]
+  },
+  {
+    "id": "open",
+    "label": "打开页面",
+    "summary": "打开 {page}",
+    "fields": [
+      { "key": "page", "label": "页面名称", "type": "text", "required": true }
+    ]
+  },
+  {
+    "id": "inspect",
+    "label": "检查状态",
+    "summary": "{subject} · {condition}",
+    "fields": [
+      {
+        "key": "subject",
+        "label": "检查对象",
+        "type": "text",
+        "required": true
+      },
+      {
+        "key": "condition",
+        "label": "检查方式",
+        "type": "select",
+        "options": [
+          "存在",
+          "不存在",
+          "可见",
+          "不可见",
+          "值符合预期",
+          "包含选项"
+        ]
+      }
+    ]
+  },
+  {
+    "id": "set",
+    "label": "设置配置",
+    "summary": "{field} → {value}",
+    "fields": [
+      { "key": "field", "label": "配置名称", "type": "text", "required": true },
+      {
+        "key": "control",
+        "label": "控件类型",
+        "type": "select",
+        "options": ["下拉选项", "开关", "文本", "数字"]
+      },
+      { "key": "value", "label": "设置为", "type": "text", "required": true }
+    ]
+  },
+  {
+    "id": "restore",
+    "label": "恢复现场",
+    "summary": "恢复 {scope}",
+    "fields": [
+      { "key": "scope", "label": "恢复范围", "type": "text", "required": true }
+    ]
+  }
+]
